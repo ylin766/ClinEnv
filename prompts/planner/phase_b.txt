@@ -1,0 +1,22 @@
+## Phase B — Anchor transitions to the event timeline
+
+Call get_timeline_index. Note the index of the last event — this is total_events - 1 and must be the end of your final stage.
+
+For each management phase you identified in Phase A:
+1. Find the event index where this phase first becomes visible in the data (a medication order, procedure, or cluster of new orders — not a lab result or imaging finding).
+2. Assign a continuous [start, end] index range.
+
+Hard constraints:
+- Stage 1 starts at index 0.
+- The final stage ends at the last event index (total_events - 1).
+- Ranges are contiguous: end[i] + 1 = start[i+1]. No gaps, no overlaps.
+
+Use get_events_by_index or search_events to inspect any boundary you are unsure about.
+
+Write out the proposed ranges explicitly:
+  Stage 1 "label": [0, X]
+  Stage 2 "label": [X+1, Y]
+  ...
+  Stage N "label": [Z, total_events - 1]
+
+Do not output JSON yet.

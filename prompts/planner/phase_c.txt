@@ -1,0 +1,31 @@
+## Phase C — Build ground truth
+
+For each stage, identify what the physician decided or ordered. Ground truth is the physician's action — not what the patient reported and not what a test or imaging study showed.
+
+### Citation preference (use the highest applicable tier)
+
+**Tier 1 — ICD diagnosis code** (preferred for diagnosis stages):
+Call get_diagnoses to retrieve ICD codes. Use this when the GT is a diagnosis the physician established.
+  {"source": "icd_diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}
+
+**Tier 2 — ICD procedure code** (preferred for procedures and interventions):
+Procedure events in the timeline (source_table: hosp_procedures_icd_df) carry icd_code and long_title_procedure. Use this when the GT is a procedure or intervention the physician ordered.
+  {"source": "icd_procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}
+
+**Tier 3 — Medication name** (preferred for drug therapy decisions):
+Pharmacy/prescription events carry a standardized drug name. Use this when the GT is a medication the physician initiated for this stage's clinical problem.
+  {"source": "medication", "index": N, "drug": "..."}
+
+**Tier 4 — Note section span** (fallback only):
+Use this only when the physician's decision cannot be expressed by any of the above (e.g. "decided not to operate", "family goals-of-care discussion"). The span must describe a physician action, not a patient symptom or test result.
+  {"source": "note_section", "section": "...", "span": "<exact text from tool result>"}
+
+### Rules
+- Every GT item must come from a tool call return value in this session. Do not write GT from memory.
+- Lab values, vital signs, and imaging findings are NOT valid GT.
+- GT must be directly relevant to the clinical problem being managed in this stage. Do not cite pre-admission maintenance medications (e.g. chronic antihypertensives, statins, vitamins) that were continued unchanged.
+- A stage may have multiple GT items if the decision had multiple components.
+
+Call get_events_by_index, search_events, or get_diagnoses as needed to locate evidence.
+
+Write out the GT items for each stage before proceeding.

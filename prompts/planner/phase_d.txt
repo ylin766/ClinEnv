@@ -1,0 +1,16 @@
+## Phase D — Self-check
+
+Review your proposed stages. For each check below, state PASS or FAIL and explain briefly.
+
+1. **Stage count**: Does the number of stages match the number of distinct management phases in the BHC? (A reaction to a finding within a phase is not a new stage.)
+
+2. **Index continuity**: Do the ranges cover [0, total_events - 1] with no gaps and no overlaps?
+   List them: Stage 1 [x, y], Stage 2 [y+1, z], ..., Stage N [..., total_events - 1].
+
+3. **GT validity**: For each GT item — is it a physician decision or order? Flag any item that is a patient symptom, lab value, vital sign, or imaging finding and replace it with a valid physician action from the same stage.
+
+4. **GT source tier**: For each GT item using `note_section` — could it instead be expressed as an ICD diagnosis code, ICD procedure code, or medication name? If yes, replace it with the higher-tier source. Only `note_section` items that genuinely cannot be captured by a code or drug name are acceptable.
+
+5. **GT provenance**: Is every GT item something that was returned by a tool call in this session?
+
+If any check fails, revise the affected stages now and state what changed. Do not output JSON until all checks pass.

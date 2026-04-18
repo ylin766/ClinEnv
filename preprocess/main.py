@@ -1,12 +1,123 @@
-"""Preprocessing entry point.
-Only responsible for connecting: Read raw EHR -> Generate decision points and readviews -> Write prepared data.
+"""Preprocessing pipeline entry point.
+Connects: load raw EHR → plan decision stages → build readviews → validate → write.
+
+Usage:
+    python -m preprocess.main --subject-id 10459005 --hadm-id 22645723
+    python -m preprocess.main --manifest data/env_ready_admissions_p50.jsonl --limit 100
 """
 
+import argparse
+import json
+import sys
+import traceback
+from pathlib import Path
 
-def main() -> None:
-    """Run a preprocessing workflow."""
-    raise NotImplementedError
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
+
+from preprocess.loaders.ehr_loader import load_admission
+from preprocess.planners.decision_planner import plan_decision_points
+from preprocess.readviews.readview_builder import build_readviews
+from preprocess.writers.prepared_case_writer import write_prepared_case, update_manifest
+
+DATA_ROOT = str(Path(__file__).parent.parent / "mimic-ext-time-series" / "Merge" / "ehr_by_subject")
+OUT_DIR   = Path(__file__).parent.parent / "data" / "cases"
+
+
+def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
+    """
+    Run the full preprocessing pipeline for one admission.
+    Returns the prepared case dict.
+    """
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Processing {subject_id}/{hadm_id}")
+        print(f"{'='*60}")
+
+    # 1. Load raw EHR
+    record = load_admission(subject_id, hadm_id, DATA_ROOT)
+    if verbose:
+        print(f"Loaded {len(record.timeline)} timeline events")
+
+    # 2. Plan decision stages
+    planner_out = plan_decision_points(record, verbose=verbose)
+    stages = planner_out["stages"]
+    if verbose:
+        print(f"Planner produced {len(stages)} stages")
+
+    # 3. Build readviews
+    enriched_stages = build_readviews(record, stages)
+
+    # 4. Assemble prepared case
+    prepared = {
+        "subject_id": subject_id,
+        "hadm_id":    hadm_id,
+        "stages":     enriched_stages,
+    }
+
+    # 5. Write to disk
+    out_path = write_prepared_case(prepared, OUT_DIR)
+    update_manifest(prepared, OUT_DIR)
+    if verbose:
+        print(f"Written to {out_path}")
+
+    return prepared
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--subject-id", help="Single subject_id (use with --hadm-id)")
+    group.add_argument("--manifest",   help="JSONL manifest file to process in batch")
+    parser.add_argument("--hadm-id",   help="Single hadm_id (use with --subject-id)")
+    parser.add_argument("--limit",     type=int, default=None,
+                        help="Max number of cases to process from manifest")
+    parser.add_argument("--quiet",     action="store_true", help="Suppress verbose output")
+    args = parser.parse_args()
+
+    verbose = not args.quiet
+    errors = []
+
+    if args.subject_id:
+        if not args.hadm_id:
+            print("--hadm-id is required with --subject-id", file=sys.stderr)
+            return 1
+        try:
+            process_one(args.subject_id, args.hadm_id, verbose=verbose)
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            traceback.print_exc()
+            return 1
+
+    else:
+        manifest = Path(args.manifest)
+        with manifest.open(encoding="utf-8") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+
+        if args.limit:
+            records = records[:args.limit]
+
+        print(f"Processing {len(records)} cases from {manifest.name}")
+        for i, rec in enumerate(records, 1):
+            sid, hid = rec["subject_id"], rec["hadm_id"]
+            print(f"\n[{i}/{len(records)}] {sid}/{hid}")
+            try:
+                process_one(sid, hid, verbose=verbose)
+            except Exception as e:
+                msg = f"FAILED {sid}/{hid}: {e}"
+                print(msg, file=sys.stderr)
+                errors.append(msg)
+                continue
+
+        print(f"\nDone. {len(records) - len(errors)}/{len(records)} succeeded.")
+        if errors:
+            print(f"{len(errors)} failures:")
+            for e in errors:
+                print(f"  {e}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

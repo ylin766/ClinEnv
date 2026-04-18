@@ -1,0 +1,11 @@
+## Phase A — Understand the admission narrative
+
+Call get_note_section for: Brief Hospital Course, Chief Complaint, History of Present Illness, Discharge Diagnosis, Discharge Instructions.
+Call get_metadata.
+
+Using the Brief Hospital Course as your primary guide, answer these questions before proceeding:
+1. How many distinct management phases does the BHC describe? Each phase that represents a genuine strategy change becomes one stage.
+2. What is each phase — one line per phase?
+3. What event or clinical development triggered the transition into each phase?
+
+Write your answers as a numbered list. Do not output JSON yet.

@@ -70,7 +70,8 @@ class SelectedAdmission:
     hadm_id: str
     path: str
     tables: list[str]
-    event_count: int
+    event_count: int        # total events including metadata tables
+    timeline_event_count: int  # events excluding metadata tables (hosp_admissions_df, hosp_diagnoses_icd_df, note_df)
     required_note_sections: list[str]
 
 
@@ -112,11 +113,15 @@ def _has_required_note_sections(note_text: str, required_sections: tuple[str, ..
     return True
 
 
+_METADATA_TABLES = {"hosp_admissions_df", "hosp_diagnoses_icd_df", "note_df"}
+
+
 def build_manifest(
     data_dir: Path,
     required_all: tuple[str, ...],
     required_any: tuple[str, ...],
     required_note_sections: tuple[str, ...],
+    max_event_percentile: int = 50,
 ) -> tuple[list[SelectedAdmission], dict[str, int]]:
     selected: list[SelectedAdmission] = []
     stats = {
@@ -127,6 +132,7 @@ def build_manifest(
         "missing_required_all": 0,
         "missing_required_any": 0,
         "missing_required_note_sections": 0,
+        "removed_by_event_percentile": 0,
         "selected_admissions": 0,
     }
 
@@ -159,6 +165,10 @@ def build_manifest(
                 stats["missing_required_note_sections"] += 1
                 continue
 
+        timeline_count = sum(
+            1 for e in events
+            if e.get("source_table") not in _METADATA_TABLES
+        )
         selected.append(
             SelectedAdmission(
                 subject_id=path.parent.name,
@@ -166,9 +176,19 @@ def build_manifest(
                 path=str(path),
                 tables=sorted(tables),
                 event_count=len(events),
+                timeline_event_count=timeline_count,
                 required_note_sections=list(required_note_sections),
             )
         )
+
+    # percentile filter on timeline_event_count
+    if selected and 0 < max_event_percentile < 100:
+        counts = sorted(a.timeline_event_count for a in selected)
+        cutoff_idx = int(len(counts) * max_event_percentile / 100) - 1
+        cutoff = counts[max(cutoff_idx, 0)]
+        filtered = [a for a in selected if a.timeline_event_count <= cutoff]
+        stats["removed_by_event_percentile"] = len(selected) - len(filtered)
+        selected = filtered
 
     stats["selected_admissions"] = len(selected)
     return selected, stats
@@ -198,6 +218,13 @@ def parse_args() -> argparse.Namespace:
         help="Note sections that must appear as headings in note_df.text.",
     )
     parser.add_argument(
+        "--max-event-percentile",
+        type=int,
+        default=50,
+        help="Keep only admissions whose timeline_event_count is at or below "
+             "this percentile of all candidates (default: 50).",
+    )
+    parser.add_argument(
         "--prefix",
         default="env_ready_admissions",
         help="Output filename prefix.",
@@ -216,6 +243,7 @@ def main() -> int:
         required_all=tuple(args.required_all),
         required_any=tuple(args.required_any),
         required_note_sections=tuple(args.required_note_sections),
+        max_event_percentile=args.max_event_percentile,
     )
 
     manifest_path = output_dir / f"{args.prefix}.jsonl"
