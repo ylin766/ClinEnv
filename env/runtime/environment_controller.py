@@ -147,7 +147,14 @@ def _build_stage_prompt(stage: dict, mode: Mode) -> str:
     if mode == "interactive":
         # No patient information given upfront — the model must gather it
         # through tools. The trigger agent will open the encounter.
-        return "Use the available tools to gather clinical information, then submit your decisions."
+        label    = stage.get("label", "")
+        decision = stage.get("decision_required", "")
+        header   = f"## {label}\n\n{decision}\n\n" if label else ""
+        return (
+            f"{header}"
+            "Use the available tools to gather clinical information, "
+            "then submit your decisions."
+        )
 
     patient_ctx = _format_patient_context(stage)
     # direct mode — include full event list

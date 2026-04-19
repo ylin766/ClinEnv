@@ -17,7 +17,7 @@ available_agents rules — list only the agents whose information is essential f
 {
   "stages": [
     {
-      "label": "short name",
+      "label": "short name — describe the clinical phase or challenge, NOT the answer (no procedure names, drug names, or findings that are part of GT)",
       "index_range": [start, end],
       "trigger": {"agent": "patient"|"nurse", "context": "one sentence: the clinical fact that opens this stage"},
       "decision_required": "one sentence: what must the doctor decide at this stage",
