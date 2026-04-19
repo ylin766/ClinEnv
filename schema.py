@@ -7,6 +7,8 @@ Neither module needs to know the other's internals.
 from __future__ import annotations
 from typing import Literal, TypedDict
 
+Mode = Literal["direct", "interactive"]
+
 
 # ------------------------------------------------------------------ #
 # Submission                                                           #

@@ -1,8 +1,19 @@
-"""Prepared data reader.
-Only responsible for reading preprocessed case data from clean/data.
+"""Prepared case reader.
+Loads preprocessed case data from data/cases/.
 """
 
+import json
+from pathlib import Path
 
-def load_prepared_case(case_id: str):
-    """Load a prepared case."""
-    raise NotImplementedError
+_DATA_DIR = Path(__file__).parent.parent.parent / "data" / "cases"
+
+
+def load_prepared_case(subject_id: str, hadm_id: str) -> dict:
+    path = _DATA_DIR / subject_id / f"{hadm_id}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_from_manifest(manifest_path: Path, index: int = 0) -> dict:
+    entries = [json.loads(l) for l in manifest_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    e = entries[index]
+    return load_prepared_case(e["subject_id"], e["hadm_id"])

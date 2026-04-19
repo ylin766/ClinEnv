@@ -98,11 +98,13 @@ def build_readviews(record: AdmissionRecord, stages: list) -> list:
 
     enriched = []
     for stage in stages:
-        end_idx = stage["index_range"][1]
+        start_idx, end_idx = stage["index_range"]
         visible = [e for e in record.timeline if e["index"] <= end_idx]
+        stage_events = [e for e in record.timeline if start_idx <= e["index"] <= end_idx]
 
         enriched.append({
             **stage,
+            "events": stage_events,
             "readviews": {
                 "patient": patient_rv,
                 "nurse":   _build_nurse_readview(visible),

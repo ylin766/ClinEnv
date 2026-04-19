@@ -8,6 +8,12 @@ GT source types:
 - {"source": "medication", "index": N, "drug": "..."}
 - {"source": "note_section", "section": "...", "span": "..."}
 
+available_agents rules — list only the agents whose information is essential for the doctor to make the decisions required at this stage:
+- "patient": include when direct patient history or symptom questioning is needed (typically Stage 1 and any stage where new patient-reported symptoms drive the decision)
+- "nurse": include when bedside vitals, monitoring data, fluid balance, or administered medications are needed
+- "lab": include when laboratory results or diagnostic imaging are needed
+- "history": include when prior admission records would meaningfully inform this stage's decisions
+
 {
   "stages": [
     {
@@ -15,6 +21,7 @@ GT source types:
       "index_range": [start, end],
       "trigger": {"agent": "patient"|"nurse"},
       "decision_required": "one sentence: what must the doctor decide at this stage",
+      "available_agents": ["patient"|"nurse"|"lab"|"history"],
       "gt": [
         {"source": "icd_diagnosis", "icd_code": "...", "icd_version": 9, "display": "..."},
         {"source": "icd_procedure", "index": N, "icd_code": "...", "icd_version": 9, "display": "..."},

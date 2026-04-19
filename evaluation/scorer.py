@@ -149,14 +149,14 @@ def score_stage(stage_log: StageResult) -> dict:
     matched_sub_ids = {id(m["submission"]) for m in matches if m["score"] > 0}
     precision = len(matched_sub_ids) / len(submissions) if submissions else 1.0
 
-    f2 = _f1(precision, recall)
+    f1 = _f1(precision, recall)
 
     return {
         "total":      len(gt),
         "hits":       round(sum(gt_scores.values()), 3),
         "recall":     round(recall, 3),
         "precision":  round(precision, 3),
-        "f1":         round(f2, 3),
+        "f1":         round(f1, 3),
         "score":      round(f1, 3),
         "matches":    matches,
         "all_submissions": submissions,
@@ -184,12 +184,12 @@ def score_episode(episode_log: dict) -> dict:
 
     overall_recall    = total_hits / total_gt if total_gt else 0.0
     overall_precision = matched / total_subs  if total_subs else 1.0
-    overall_f2        = _f1(overall_precision, overall_recall)
+    overall_f1        = _f1(overall_precision, overall_recall)
 
     return {
         **episode_log,
         "stages":        scored_stages,
-        "overall_score": round(overall_f2, 3),
+        "overall_score": round(overall_f1, 3),
         "overall_hits":  round(total_hits, 3),
         "overall_total": total_gt,
     }

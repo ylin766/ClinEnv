@@ -29,6 +29,6 @@ Episode log schema
 
 from env.runtime.environment_controller import run_episode
 from env.logging import save_episode_log
-from schema import StageResult, Submission, GTItem
+from schema import StageResult, Submission, GTItem, Mode
 
-__all__ = ["run_episode", "save_episode_log", "StageResult", "Submission", "GTItem"]
+__all__ = ["run_episode", "save_episode_log", "StageResult", "Submission", "GTItem", "Mode"]

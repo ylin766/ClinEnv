@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 from preprocess.loaders.ehr_loader import load_admission
+from preprocess.loaders.prior_admissions import load_prior_admissions
 from preprocess.planners.decision_planner import plan_decision_points
 from preprocess.readviews.readview_builder import build_readviews
 from preprocess.writers.prepared_case_writer import write_prepared_case, update_manifest
@@ -49,14 +50,22 @@ def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
     # 3. Build readviews
     enriched_stages = build_readviews(record, stages)
 
-    # 4. Assemble prepared case
-    prepared = {
-        "subject_id": subject_id,
-        "hadm_id":    hadm_id,
-        "stages":     enriched_stages,
-    }
+    # 4. Load prior admissions (for interactive mode history tools)
+    current_admittime = record.admission_meta.get("event_time", "")
+    prior_admissions  = load_prior_admissions(subject_id, hadm_id, current_admittime, DATA_ROOT)
+    if verbose:
+        print(f"Found {len(prior_admissions)} prior admission(s)")
 
-    # 5. Write to disk
+    # 5. Assemble prepared case
+    prepared: dict = {
+        "subject_id":       subject_id,
+        "hadm_id":          hadm_id,
+        "stages":           enriched_stages,
+    }
+    if prior_admissions:
+        prepared["prior_admissions"] = prior_admissions
+
+    # 6. Write to disk
     out_path = write_prepared_case(prepared, OUT_DIR)
     update_manifest(prepared, OUT_DIR)
     if verbose:

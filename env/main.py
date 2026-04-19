@@ -28,8 +28,10 @@ def main() -> int:
     group.add_argument("--manifest",   help="Manifest JSONL to pick a case from")
     parser.add_argument("--hadm-id",   help="Admission ID (use with --subject-id)")
     parser.add_argument("--index",     type=int, default=0, help="Case index in manifest (default: 0)")
-    parser.add_argument("--model",     default=None, help="OpenAI model override")
-    parser.add_argument("--quiet",     action="store_true")
+    parser.add_argument("--model",  default=None,       help="OpenAI model override")
+    parser.add_argument("--mode",   default="direct",   choices=["direct", "interactive"],
+                        help="Environment mode (default: direct)")
+    parser.add_argument("--quiet",  action="store_true")
     args = parser.parse_args()
 
     verbose = not args.quiet
@@ -45,7 +47,7 @@ def main() -> int:
     if verbose:
         print(f"Loaded case: subject={case['subject_id']} hadm={case['hadm_id']} stages={len(case['stages'])}")
 
-    episode_log = run_episode(case, model=args.model, verbose=verbose)
+    episode_log = run_episode(case, model=args.model, mode=args.mode, verbose=verbose)
     scored      = score_episode(episode_log)
 
     log_path = _LOG_DIR / case["subject_id"] / f"{case['hadm_id']}.json"
