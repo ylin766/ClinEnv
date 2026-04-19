@@ -1,12 +1,63 @@
 """Environment execution entry point.
-Only responsible for loading prepared cases and starting an interactive evaluation session.
+
+Usage:
+    python -m env.main --subject-id 10196757 --hadm-id 24725711
+    python -m env.main --manifest data/cases/manifest.jsonl --index 0
+    python -m env.main --manifest data/cases/manifest.jsonl --index 0 --model gpt-4o-mini
 """
 
+import argparse
+import sys
+from pathlib import Path
 
-def main() -> None:
-    """Run an environment session."""
-    raise NotImplementedError
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
+
+from env import run_episode, save_episode_log
+from env.readers.prepared_case_reader import load_prepared_case, load_from_manifest
+from evaluation import score_episode
+
+_LOG_DIR = Path(__file__).parent.parent / "data" / "episodes"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--subject-id", help="Subject ID (use with --hadm-id)")
+    group.add_argument("--manifest",   help="Manifest JSONL to pick a case from")
+    parser.add_argument("--hadm-id",   help="Admission ID (use with --subject-id)")
+    parser.add_argument("--index",     type=int, default=0, help="Case index in manifest (default: 0)")
+    parser.add_argument("--model",     default=None, help="OpenAI model override")
+    parser.add_argument("--quiet",     action="store_true")
+    args = parser.parse_args()
+
+    verbose = not args.quiet
+
+    if args.subject_id:
+        if not args.hadm_id:
+            print("--hadm-id required with --subject-id", file=sys.stderr)
+            return 1
+        case = load_prepared_case(args.subject_id, args.hadm_id)
+    else:
+        case = load_from_manifest(Path(args.manifest), args.index)
+
+    if verbose:
+        print(f"Loaded case: subject={case['subject_id']} hadm={case['hadm_id']} stages={len(case['stages'])}")
+
+    episode_log = run_episode(case, model=args.model, verbose=verbose)
+    scored      = score_episode(episode_log)
+
+    log_path = _LOG_DIR / case["subject_id"] / f"{case['hadm_id']}.json"
+    save_episode_log(log_path, scored)
+
+    print(f"\n{'='*60}")
+    print(f"Episode complete.")
+    print(f"Overall score: {scored['overall_hits']}/{scored['overall_total']} (F1={scored['overall_score']})")
+    print(f"Log saved to: {log_path}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,10 +1,20 @@
 ## Phase B — Anchor transitions to the event timeline
 
-Call get_timeline_index. Note the index of the last event — this is total_events - 1 and must be the end of your final stage.
+Call get_timeline_index to see all events. Note the index of the last event — this is total_events - 1 and must be the end of your final stage.
 
-For each management phase you identified in Phase A:
-1. Find the event index where this phase first becomes visible in the data (a medication order, procedure, or cluster of new orders — not a lab result or imaging finding).
-2. Assign a continuous [start, end] index range.
+For each management phase you identified in Phase A, identify the transition action: the key procedure, medication cluster, or clinical milestone that marks the END of this phase and the beginning of the next.
+
+Stage boundary rule (critical):
+- The transition action belongs to the NEXT stage, not the current one.
+- end[i] = the last information-gathering event BEFORE the transition action.
+- start[i+1] = the transition action itself (the first event of the new phase).
+- This means GT events for stage i must have index > end[i]. They are not yet visible to the model.
+
+Example:
+  Stage 1 covers initial evaluation. The transition is a cardiac catheterization at index 27.
+  → Stage 1: [0, 26]  (model sees information up to index 26)
+  → GT for Stage 1: index 27 (cath) — not visible, model must predict it
+  → Stage 2: [27, N]  (cath is the opening event of Stage 2)
 
 Hard constraints:
 - Stage 1 starts at index 0.

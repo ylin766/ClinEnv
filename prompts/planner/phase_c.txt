@@ -25,6 +25,16 @@ Use this only when the physician's decision cannot be expressed by any of the ab
 - Lab values, vital signs, and imaging findings are NOT valid GT.
 - GT must be directly relevant to the clinical problem being managed in this stage. Do not cite pre-admission maintenance medications (e.g. chronic antihypertensives, statins, vitamins) that were continued unchanged.
 - A stage may have multiple GT items if the decision had multiple components.
+- CRITICAL: GT event index must be GREATER THAN the stage's end index. GT represents what the physician decided at the end of this stage — the result is not yet visible to the model. If a procedure or medication appears within the stage's visible range, it is background context, not GT.
+- Do NOT cite emergency/reactive medications as GT. These are identifiable by frequency "X1", "X1:PRN", or "ONCE" — they are single-dose standby drugs (e.g. atropine for bradycardia during a procedure) that are not deliberate physician decisions but standard protocol backups.
+- ICD discharge diagnoses ARE valid GT when the stage decision requires a comprehensive diagnostic conclusion. When citing discharge diagnoses, note that these represent the physician's final confirmed assessment, and the decision_required for this stage should ask the model to provide a definitive diagnosis.
+- Do NOT cite the following as GT medications — these are routine inpatient care orders, not stage-specific clinical decisions:
+  - Bowel regimen drugs: Docusate Sodium, Senna, Bisacodyl, Polyethylene Glycol (MiraLax), Lactulose
+  - Routine glycemic management: Insulin ordered as "ASDIR" or sliding scale, unless this stage is specifically about new diabetes management
+  - Basic IV fluids and electrolyte replacement: Normal Saline (NS), Lactated Ringer's (LR), KCl, Magnesium Sulfate (routine replenishment)
+  - Nutritional supplements: Thiamine, Folate, Multivitamins, Zinc
+  - Routine prophylaxis already established: e.g. DVT prophylaxis heparin if it was running the whole admission
+  Only cite a medication as GT if it represents a deliberate clinical decision specific to this stage's problem (e.g. initiating anticoagulation for new AF, starting a new antihypertensive after a hypertensive emergency).
 
 Call get_events_by_index, search_events, or get_diagnoses as needed to locate evidence.
 
