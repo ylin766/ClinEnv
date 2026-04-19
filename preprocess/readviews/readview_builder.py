@@ -74,8 +74,13 @@ def _build_lab_readview(visible_events: list) -> dict:
     """
     Lab readview: lab results and microbiology.
     Contains all lab-table events visible at this stage (cumulative).
+    Degenerate entries (label shorter than 2 characters) are excluded.
     """
-    events = [e for e in visible_events if e["source_table"] in _LAB_TABLES]
+    events = [
+        e for e in visible_events
+        if e["source_table"] in _LAB_TABLES
+        and len(str(e.get("label") or e.get("test_name") or "")) >= 2
+    ]
     return {"events": events}
 
 

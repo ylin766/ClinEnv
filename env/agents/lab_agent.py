@@ -36,12 +36,11 @@ def _format_result(ev: dict) -> dict:
 
 
 def search(readview: dict, test_name: str) -> dict:
-    """Search lab readview for test_name (case-insensitive substring match).
+    """Look up lab results for a specific test name (case-insensitive).
 
-    Matches when either:
-      - query is a substring of the label  (e.g. "glucose" → "Glucose, Blood")
-      - label is a substring of the query  (e.g. "Hemoglobin" → "Hemoglobin, Blood")
-        (label must be ≥3 chars to avoid single-char MIMIC data artefacts)
+    Checks whether the ordered test name appears in any result label.
+    Returns the result if found, or not-available if the test was not
+    performed or did not result for this patient.
 
     Returns:
         {"found": True,  "results": [...]}   if matched
@@ -49,12 +48,7 @@ def search(readview: dict, test_name: str) -> dict:
     """
     kw      = test_name.lower().strip()
     events  = readview.get("events", [])
-    matches = [
-        ev for ev in events
-        if (lab := _label(ev).lower()) and (
-            kw in lab or (len(lab) >= 3 and lab in kw)
-        )
-    ]
+    matches = [ev for ev in events if kw in _label(ev).lower()]
     if not matches:
         return {
             "found":   False,
