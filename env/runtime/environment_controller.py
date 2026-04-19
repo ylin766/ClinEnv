@@ -144,14 +144,12 @@ def _compact_event(ev: dict) -> dict:
 
 
 def _build_stage_prompt(stage: dict, mode: Mode) -> str:
-    patient_ctx = _format_patient_context(stage)
     if mode == "interactive":
-        return (
-            f"## New Clinical Encounter\n\n"
-            f"{patient_ctx}\n\n"
-            f"---\n\n"
-            f"Use the available tools to gather clinical information, then submit your decisions."
-        )
+        # No patient information given upfront — the model must gather it
+        # through tools. The trigger agent will open the encounter.
+        return "Use the available tools to gather clinical information, then submit your decisions."
+
+    patient_ctx = _format_patient_context(stage)
     # direct mode — include full event list
     _GT_TO_TYPE = {"icd_procedure": "procedure", "icd_diagnosis": "diagnosis", "medication": "medication"}
     required = sorted({
@@ -193,11 +191,13 @@ def _gt_summary(gt: list[dict]) -> str:
 
 
 def _filter_messages_for_context(messages: list[dict]) -> list[dict]:
-    """Return prior-stage messages with submit/finalize responses collapsed to 'recorded'.
+    """Return prior-stage messages with all submit/finalize activity stripped.
 
-    OpenAI requires every tool_call_id in an assistant message to have a matching
-    tool response. Instead of deleting submit/finalize responses we replace them
-    with a minimal placeholder so the sequence stays valid.
+    Submit and finalize tool calls are removed from assistant messages entirely.
+    Their corresponding tool responses are also dropped so no orphaned
+    tool_call_ids remain. The GT summary is injected separately by
+    _build_prior_context — the model should not see its own (possibly wrong)
+    submissions in prior context.
     """
     submit_ids: set[str] = set()
     for msg in messages:
@@ -212,13 +212,21 @@ def _filter_messages_for_context(messages: list[dict]) -> list[dict]:
             continue
         if msg.get("role") == "system":
             continue
+        # Drop tool responses for submit/finalize
         if msg.get("role") == "tool" and msg.get("tool_call_id") in submit_ids:
-            # keep the message but strip content so it doesn't pollute context
-            filtered.append({
-                "role":        "tool",
-                "tool_call_id": msg["tool_call_id"],
-                "content":     "recorded",
-            })
+            continue
+        # Strip submit/finalize tool_calls from assistant messages
+        if msg.get("role") == "assistant":
+            remaining_tcs = [
+                tc for tc in (msg.get("tool_calls") or [])
+                if tc.get("function", {}).get("name") not in SUBMIT_TOOLS | {FINALIZE_TOOL}
+            ]
+            if not remaining_tcs and not msg.get("content"):
+                continue  # nothing left — drop the whole message
+            stripped = {**msg, "tool_calls": remaining_tcs or None}
+            if stripped["tool_calls"] is None:
+                stripped.pop("tool_calls", None)
+            filtered.append(stripped)
         else:
             filtered.append(msg)
     return filtered
@@ -347,6 +355,43 @@ def _call(client: OpenAI, messages: list, tools: list, verbose: bool):
 
 
 # ------------------------------------------------------------------ #
+# Trigger                                                              #
+# ------------------------------------------------------------------ #
+
+_TRIGGER_QUESTIONS = {
+    "patient": "Please introduce yourself and describe what brings you in today.",
+    "nurse":   (
+        "Please briefly describe the patient's current clinical status "
+        "and summarise what has happened or changed since the last assessment."
+    ),
+}
+
+
+def _call_trigger(stage: dict, client: OpenAI, model: str) -> str | None:
+    """Call the trigger agent to open this stage.
+
+    Returns a formatted string '[Speaker] <response>', or None if the
+    trigger agent or its readview is not available.
+    """
+    from env.agents import patient_agent, nurse_agent
+
+    trigger = stage.get("trigger", {})
+    agent   = trigger.get("agent", "")
+    rv      = stage.get("readviews", {})
+    question = _TRIGGER_QUESTIONS.get(agent)
+    if not question:
+        return None
+
+    if agent == "patient":
+        response = patient_agent.answer(rv.get("patient", {}), question, client, model)
+        return f"[Patient] {response}"
+    if agent == "nurse":
+        response = nurse_agent.answer(rv.get("nurse", {}), question, client, model)
+        return f"[Nurse] {response}"
+    return None
+
+
+# ------------------------------------------------------------------ #
 # Stage loop                                                           #
 # ------------------------------------------------------------------ #
 
@@ -387,6 +432,14 @@ def run_stage(
         messages.extend(_build_prior_context(prior_stage_logs))
     messages.append({"role": "user", "content": _build_stage_prompt(stage, mode)})
     current_stage_start = len(messages) - 1  # index of this stage's opening prompt
+
+    # Interactive: inject trigger agent's opening message
+    if mode == "interactive":
+        trigger_text = _call_trigger(stage, client, os.getenv("ENV_MODEL", _DEFAULT_MODEL))
+        if trigger_text:
+            if verbose:
+                print(f"  [trigger] {trigger_text[:200]}")
+            messages.append({"role": "user", "content": trigger_text})
 
     submissions: list[dict] = []
     finalized  = False
