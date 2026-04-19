@@ -146,13 +146,10 @@ def _compact_event(ev: dict) -> dict:
 def _build_stage_prompt(stage: dict, mode: Mode) -> str:
     patient_ctx = _format_patient_context(stage)
     if mode == "interactive":
-        agents = stage.get("available_agents", ["patient", "nurse", "lab"])
-        agent_list = ", ".join(agents) if agents else "none"
         return (
             f"## New Clinical Encounter\n\n"
             f"{patient_ctx}\n\n"
             f"---\n\n"
-            f"Active information sources for this encounter: {agent_list}\n\n"
             f"Use the available tools to gather clinical information, then submit your decisions."
         )
     # direct mode — include full event list
