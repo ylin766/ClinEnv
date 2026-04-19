@@ -19,7 +19,7 @@ available_agents rules — list only the agents whose information is essential f
     {
       "label": "short name",
       "index_range": [start, end],
-      "trigger": {"agent": "patient"|"nurse"},
+      "trigger": {"agent": "patient"|"nurse", "context": "one sentence: the clinical fact that opens this stage"},
       "decision_required": "one sentence: what must the doctor decide at this stage",
       "available_agents": ["patient"|"nurse"|"lab"|"history"],
       "gt": [
@@ -34,6 +34,6 @@ available_agents rules — list only the agents whose information is essential f
 }
 
 Trigger rules:
-- Stage 1: {"agent": "patient"} — the patient presents with their complaint.
-- Later stages: {"agent": "nurse"} — the nurse signals the clinical milestone that closes the previous phase.
-Specify agent name only. Do not write dialogue or opening content.
+- Stage 1: agent = "patient", context = one-sentence factual summary of the presenting complaint and key history from the HPI.
+- Later stages: agent = "nurse", context = one-sentence factual summary of the clinical milestone that closes the previous phase and opens this one (e.g. "EGD completed showing gastritis with hemorrhage; anticoagulation now being adjusted").
+Write only clinical facts. Do not write dialogue. The agent will use this context to speak in their own voice.

@@ -358,36 +358,46 @@ def _call(client: OpenAI, messages: list, tools: list, verbose: bool):
 # Trigger                                                              #
 # ------------------------------------------------------------------ #
 
-_TRIGGER_QUESTIONS = {
-    "patient": "Please introduce yourself and describe what brings you in today.",
-    "nurse":   (
-        "Please briefly describe the patient's current clinical status "
-        "and summarise what has happened or changed since the last assessment."
-    ),
-}
-
-
 def _call_trigger(stage: dict, client: OpenAI, model: str) -> str | None:
     """Call the trigger agent to open this stage.
 
+    The planner provides trigger.context (a one-sentence clinical fact).
+    The trigger agent uses that context — plus its readview — to speak
+    in their own voice, opening the encounter.
+
     Returns a formatted string '[Speaker] <response>', or None if the
-    trigger agent or its readview is not available.
+    trigger agent is not available.
     """
     from env.agents import patient_agent, nurse_agent
 
-    trigger = stage.get("trigger", {})
-    agent   = trigger.get("agent", "")
-    rv      = stage.get("readviews", {})
-    question = _TRIGGER_QUESTIONS.get(agent)
-    if not question:
-        return None
+    trigger  = stage.get("trigger", {})
+    agent    = trigger.get("agent", "")
+    context  = trigger.get("context", "")
+    rv       = stage.get("readviews", {})
 
     if agent == "patient":
-        response = patient_agent.answer(rv.get("patient", {}), question, client, model)
+        query = (
+            f"Clinical context for this encounter: {context}\n\n"
+            "In character as the patient, introduce yourself and describe "
+            "what brings you in today."
+        ) if context else (
+            "Please introduce yourself and describe what brings you in today."
+        )
+        response = patient_agent.answer(rv.get("patient", {}), query, client, model)
         return f"[Patient] {response}"
+
     if agent == "nurse":
-        response = nurse_agent.answer(rv.get("nurse", {}), question, client, model)
+        query = (
+            f"Clinical context to communicate: {context}\n\n"
+            "In character as the bedside nurse, briefly report this update "
+            "to the physician, including any relevant bedside data you have."
+        ) if context else (
+            "Please briefly describe the patient's current clinical status "
+            "and any recent developments."
+        )
+        response = nurse_agent.answer(rv.get("nurse", {}), query, client, model)
         return f"[Nurse] {response}"
+
     return None
 
 
