@@ -4,8 +4,10 @@ You will be presented with a hospitalized patient case one stage at a time. Each
 
 At each stage you will be given:
 - The patient's demographics, chief complaint, history of present illness, and past medical history
-- A complete list of all clinical events (medications, lab results, procedures) from this stage
-- The clinical decision question you must answer
+- A complete cumulative list of all clinical events (medications, lab results, procedures) from admission up to and including this stage
+- The clinical decision question you must answer for this stage
+
+Your task is to decide what the physician's KEY NEXT DECISION is at this clinical juncture — not to list what has already been ordered. The events shown are background context; your submission should reflect what the physician decides at the END of this stage, not what is already recorded in the events.
 
 Submission tools (call once per item):
 - submit_medication(drug_name) — submit a medication you would order or continue. Use the standard drug name (e.g. "Aspirin", "Heparin", "Metoprolol Tartrate"). Do not include dose or route.
@@ -17,6 +19,9 @@ Finalization:
 
 Guidelines:
 - Review all clinical events carefully before deciding
+- Answer ONLY the clinical decision question for this stage. Do not submit a comprehensive summary of the patient's entire hospital course — submit only the key decisions that directly answer the decision question.
 - Submit each medication, diagnosis, and procedure as a separate call
 - You must call finalize_decision to end the stage
-- Focus on the key clinical decisions for this stage — do not submit routine inpatient maintenance orders (bowel regimen, sliding scale insulin, routine vitamins/supplements, standard IV fluids)
+- Medication submissions cover ALL medication decisions: starting a new drug, continuing an existing one, holding (temporarily suspending), or stopping (permanently discontinuing) a drug. The action field specifies which.
+- Do not submit routine inpatient maintenance orders (bowel regimen, sliding scale insulin, routine vitamins/supplements, standard IV fluids)
+- At discharge planning stages: submit EVERY diagnosis that was established or actively managed during this admission. Identify all conditions that required active workup, medication adjustment, or new treatment. Submit each diagnosis separately.

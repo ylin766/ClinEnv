@@ -28,6 +28,8 @@ _NURSE_TABLES = {
     "ehr_ingredientevents_df",  # IV ingredient detail
     "hosp_emar_detail_df",      # medication administration record
     "radiology_note",           # radiology reports
+    "hosp_procedures_icd_df",   # ICD procedure records — visible once within stage range
+                                # (GT protection is handled by index_range boundary, not by hiding the table)
 }
 
 _LAB_TABLES = {
@@ -36,10 +38,11 @@ _LAB_TABLES = {
 }
 
 # Tables not routed to any agent readview (physician-decision records / GT only)
+# hosp_procedures_icd_df removed: GT protection comes from the stage boundary (GT index > stage end),
+# so procedures within the visible range are past facts the model should be able to access.
 _PHYSICIAN_ONLY_TABLES = {
     "hosp_pharmacy_df",
     "hosp_prescriptions_df",
-    "hosp_procedures_icd_df",
 }
 
 
@@ -109,7 +112,8 @@ def build_readviews(record: AdmissionRecord, stages: list) -> list:
 
         enriched.append({
             **stage,
-            "events": stage_events,
+            "events": stage_events,          # events within this stage only (used internally)
+            "visible_events": visible,        # cumulative [0, end_idx] — used by direct mode prompt
             "readviews": {
                 "patient": patient_rv,
                 "nurse":   _build_nurse_readview(visible),

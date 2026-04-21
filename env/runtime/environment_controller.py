@@ -20,13 +20,19 @@ from openai import OpenAI, RateLimitError
 
 from schema import Mode
 from env.tools.env_tools import (
-    DIRECT_TOOLS, SUBMIT_TOOLS, FINALIZE_TOOL,
-    get_interactive_tools, dispatch,
+    SUBMIT_TOOLS, FINALIZE_TOOL,
+    get_submit_tools, get_interactive_tools, dispatch,
 )
 
-_SYSTEM_PROMPT      = Path(__file__).parent.parent.parent / "prompts" / "env" / "model_under_test.txt"
-_INTERACTIVE_ADDON  = Path(__file__).parent.parent.parent / "prompts" / "env" / "mode_interactive.txt"
+_PROMPTS_DIR        = Path(__file__).parent.parent.parent / "prompts"
+_ENV_DIR            = _PROMPTS_DIR / "env"
+_MUT_DIR            = _PROMPTS_DIR / "model_under_test"
+_SYSTEM_PROMPT      = _ENV_DIR / "model_under_test.txt"
+_INTERACTIVE_ADDON  = _ENV_DIR / "mode_interactive.txt"
+_STAGE_INTERACTIVE  = _MUT_DIR / "stage_interactive.txt"
+_STAGE_DIRECT       = _MUT_DIR / "stage_direct.txt"
 _DEFAULT_MODEL      = "gpt-5.4-mini-2026-03-17"
+
 _MAX_TURNS_INTERACT = 60
 
 
@@ -143,37 +149,33 @@ def _compact_event(ev: dict) -> dict:
     return {k: v for k, v in row.items() if v is not None and v != ""}
 
 
-def _build_stage_prompt(stage: dict, mode: Mode) -> str:
+def _build_stage_prompt(stage: dict, mode: Mode, hint_counts: bool = False) -> str:
     if mode == "interactive":
-        # No patient information given upfront — the model must gather it
-        # through tools. The trigger agent will open the encounter.
         label    = stage.get("label", "")
-        decision = stage.get("decision_required", "")
-        header   = f"## {label}\n\n{decision}\n\n" if label else ""
-        return (
-            f"{header}"
-            "Use the available tools to gather clinical information, "
-            "then submit your decisions."
-        )
+        header   = f"## {label}\n\n" if label else ""
+        return header + _STAGE_INTERACTIVE.read_text(encoding="utf-8")
 
+    # direct mode — full cumulative chart up to this stage's end
+    from collections import Counter
     patient_ctx = _format_patient_context(stage)
-    # direct mode — include full event list
-    _GT_TO_TYPE = {"icd_procedure": "procedure", "icd_diagnosis": "diagnosis", "medication": "medication"}
-    required = sorted({
-        _GT_TO_TYPE[g["source"]] for g in stage.get("gt", []) if g.get("source") in _GT_TO_TYPE
-    })
-    required_str = (
-        ", ".join(f"submit_{t}" for t in required)
-        if required else
-        "submit_procedure / submit_diagnosis / submit_medication"
-    )
-    return (
-        f"{patient_ctx}\n\n"
-        f"---\n\n"
-        f"## Clinical Events\n\n"
-        f"{_format_events(stage)}\n\n"
-        f"---\n\n"
-        f"Submit using: {required_str}, then call finalize_decision."
+    gt_types = [g["type"] for g in stage.get("gt", []) if g.get("type")]
+    required = sorted(set(gt_types))
+    if hint_counts:
+        counts = Counter(gt_types)
+        submit_tools = ", ".join(
+            f"submit_{t} ×{counts[t]}" for t in required
+        ) if required else "submit_procedure / submit_diagnosis / submit_medication / submit_plan"
+    else:
+        submit_tools = (
+            ", ".join(f"submit_{t}" for t in required)
+            if required else
+            "submit_procedure / submit_diagnosis / submit_medication / submit_plan"
+        )
+    cumulative_stage = {**stage, "events": stage.get("visible_events", stage.get("events", []))}
+    return _STAGE_DIRECT.read_text(encoding="utf-8").format(
+        patient_ctx  = patient_ctx,
+        events       = _format_events(cumulative_stage),
+        submit_tools = submit_tools,
     )
 
 
@@ -182,19 +184,19 @@ def _build_stage_prompt(stage: dict, mode: Mode) -> str:
 # ------------------------------------------------------------------ #
 
 def _gt_summary(gt: list[dict]) -> str:
-    """Format a stage's GT as a brief clinical note for the next stage's context."""
+    """Format a stage's GT as confirmed clinical facts for the next stage's context."""
     lines = []
     for item in gt:
         src = item.get("source", "")
         if src == "icd_diagnosis":
-            lines.append(f"- Diagnosis: {item.get('display', item.get('icd_code', ''))}")
+            lines.append(f"- Diagnosis confirmed: {item.get('display', item.get('icd_code', ''))}")
         elif src == "icd_procedure":
-            lines.append(f"- Procedure: {item.get('display', item.get('icd_code', ''))}")
+            lines.append(f"- Procedure performed: {item.get('display', item.get('icd_code', ''))}")
         elif src == "medication":
-            lines.append(f"- Medication: {item.get('drug', '')}")
+            lines.append(f"- Medication decision: {item.get('drug', '')}")
         elif src == "note_section":
-            lines.append(f"- Decision: {item.get('span', '')}")
-    return "\n".join(lines) if lines else "(no structured GT)"
+            lines.append(f"- Clinical decision: {item.get('span', '')}")
+    return "\n".join(lines) if lines else "(no structured decisions)"
 
 
 def _filter_messages_for_context(messages: list[dict]) -> list[dict]:
@@ -244,7 +246,9 @@ def _build_prior_context(prior_stage_logs: list[dict]) -> list[dict]:
 
     Includes:
       - filtered conversation history from all prior stages
-      - a summary of GT decisions confirmed in each prior stage
+      - confirmed GT decisions from each prior stage, framed as established facts
+
+    The model is explicitly told not to re-submit previously confirmed decisions.
     """
     if not prior_stage_logs:
         return []
@@ -253,14 +257,11 @@ def _build_prior_context(prior_stage_logs: list[dict]) -> list[dict]:
     for log in prior_stage_logs:
         # conversation history (minus submit/finalize turns)
         context_messages.extend(_filter_messages_for_context(log.get("messages", [])))
-        # GT summary as a system-style note
+        # GT as confirmed facts — model must treat these as established and not re-submit
         gt_text = _gt_summary(log.get("gt", []))
         context_messages.append({
             "role":    "user",
-            "content": (
-                f"[Clinical decisions confirmed for the previous encounter — {log.get('label', '')}]\n"
-                f"{gt_text}"
-            ),
+            "content": f"[What actually happened — {log.get('label', '')}]\n{gt_text}",
         })
 
     return context_messages
@@ -394,6 +395,11 @@ def _call_trigger(stage: dict, client: OpenAI, model: str) -> str | None:
         return f"[Patient] {response}"
 
     if agent == "nurse":
+        nurse_events = rv.get("nurse", {}).get("events", [])
+        if not nurse_events:
+            # No bedside data — deliver the context directly rather than
+            # routing through the nurse agent (who would only say "no data").
+            return f"[Clinical Update] {context}" if context else None
         query = (
             f"Clinical context to communicate: {context}\n\n"
             "In character as the bedside nurse, briefly report this update "
@@ -419,23 +425,40 @@ def run_stage(
     prior_stage_logs: list[dict] | None = None,
     prior_admissions: list[dict] | None = None,
     verbose: bool = True,
+    hint_counts: bool = False,
 ) -> dict:
     """Run one stage. Returns a stage log dict: {label, turns, submissions, gt, messages}.
 
+    hint_counts: if True, tell the model how many submissions of each type are required
+                 and decrement the count in each tool response as submissions are recorded.
     Scoring is NOT included — call evaluation.scorer.score_stage() separately.
     """
-    _GT_TO_TYPE = {"icd_procedure": "procedure", "icd_diagnosis": "diagnosis", "medication": "medication"}
-    required_types = {
-        _GT_TO_TYPE[g["source"]]
-        for g in stage.get("gt", [])
-        if g.get("source") in _GT_TO_TYPE
-    }
+    from collections import Counter
+    required_types   = {g["type"] for g in stage.get("gt", []) if g.get("type")}
+    required_counts  = Counter(
+        g["type"] for g in stage.get("gt", []) if g.get("type")
+    )
 
-    prior_admissions  = prior_admissions or []
-    available_agents  = stage.get("available_agents", ["patient", "nurse", "lab"])
+    prior_admissions = prior_admissions or []
+    available_agents = list(stage.get("available_agents", ["patient", "nurse", "lab"]))
+
+    # Suppress agents whose readviews are empty — giving the model a tool
+    # that always responds "no data" is worse than not offering the tool.
+    if mode == "interactive":
+        rv = stage.get("readviews", {})
+        if "nurse" in available_agents and not rv.get("nurse", {}).get("events"):
+            available_agents.remove("nurse")
+            if verbose:
+                print("  [env] nurse readview empty — nurse tool suppressed for this stage")
+        if "lab" in available_agents and not rv.get("lab", {}).get("events"):
+            available_agents.remove("lab")
+            if verbose:
+                print("  [env] lab readview empty — lab tool suppressed for this stage")
+
     tools = (
-        DIRECT_TOOLS if mode == "direct"
-        else get_interactive_tools(available_agents, has_history=bool(prior_admissions))
+        get_submit_tools(required_types) if mode == "direct"
+        else get_interactive_tools(available_agents, has_history=bool(prior_admissions),
+                                   required_types=required_types)
     )
 
     ctx = {
@@ -445,9 +468,17 @@ def run_stage(
     }
 
     messages: list = [{"role": "system", "content": _system_prompt(mode)}]
-    if mode == "interactive" and prior_stage_logs:
-        messages.extend(_build_prior_context(prior_stage_logs))
-    messages.append({"role": "user", "content": _build_stage_prompt(stage, mode)})
+    if prior_stage_logs:
+        if mode == "interactive":
+            messages.extend(_build_prior_context(prior_stage_logs))
+        else:
+            # Direct mode: inject GT from each prior stage as established facts
+            prior_text = "\n\n".join(
+                f"[What actually happened — {log.get('label', '')}]\n{_gt_summary(log.get('gt', []))}"
+                for log in prior_stage_logs
+            )
+            messages.append({"role": "user", "content": prior_text})
+    messages.append({"role": "user", "content": _build_stage_prompt(stage, mode, hint_counts=hint_counts)})
     current_stage_start = len(messages) - 1  # index of this stage's opening prompt
 
     # Interactive: inject trigger agent's opening message
@@ -504,7 +535,20 @@ def run_stage(
                 print(f"         → {preview[:200]}{'...' if len(preview) > 200 else ''}")
 
             if name in SUBMIT_TOOLS and result.get("status") == "recorded":
-                submissions.append(result)
+                duplicate = any(
+                    s.get("type") == result.get("type") and s.get("value") == result.get("value")
+                    for s in submissions
+                )
+                if not duplicate:
+                    submissions.append(result)
+                    if hint_counts:
+                        sub_type = result.get("type", "")
+                        if required_counts[sub_type] > 0:
+                            required_counts[sub_type] -= 1
+                        remaining = {t: c for t, c in required_counts.items() if c > 0}
+                        result = {**result, "remaining": remaining if remaining else "all done"}
+                elif verbose:
+                    print(f"  [env] duplicate submission ignored: {result.get('type')} '{result.get('value')[:60]}'...")
 
             if name == FINALIZE_TOOL:
                 missing = required_types - {s["type"] for s in submissions}
@@ -532,13 +576,13 @@ def run_stage(
 
     raw_messages = [m if isinstance(m, dict) else m.model_dump() for m in messages]
     return {
-        "label":        stage.get("label", ""),
-        "index_range":  stage.get("index_range"),
-        "turns":        turn + 1,
-        "submissions":  submissions,
-        "gt":           stage.get("gt", []),
-        "conversation": _build_conversation(raw_messages, start=current_stage_start),
-        "messages":     raw_messages,
+        "label":       stage.get("label", ""),
+        "index_range": stage.get("index_range"),
+        "turns":       turn + 1,
+        "submissions":       submissions,
+        "gt":                stage.get("gt", []),
+        "conversation":      _build_conversation(raw_messages, start=current_stage_start),
+        "messages":          raw_messages,
     }
 
 
@@ -551,6 +595,7 @@ def run_episode(
     model: str | None = None,
     mode: Mode = "direct",
     verbose: bool = True,
+    hint_counts: bool = False,
 ) -> dict:
     """Run all stages of a prepared case. Returns the raw episode log (no scores).
 
@@ -572,9 +617,10 @@ def run_episode(
             client,
             stage,
             mode             = mode,
-            prior_stage_logs = stage_logs if mode == "interactive" else None,
+            prior_stage_logs = stage_logs,
             prior_admissions = prior_admissions,
             verbose          = verbose,
+            hint_counts      = hint_counts,
         )
         stage_logs.append(log)
 

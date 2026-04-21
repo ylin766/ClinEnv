@@ -2,11 +2,15 @@
 
 Output the final plan as a single JSON object. No markdown fences, no extra text — JSON only.
 
-GT source types:
-- {"source": "icd_diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}
-- {"source": "icd_procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}
-- {"source": "medication", "index": N, "drug": "..."}
-- {"source": "note_section", "section": "...", "span": "..."}
+CRITICAL: The APPROVED STAGE blocks at the end of Phase D are the authoritative source of truth. Copy those stage boundaries and GT items verbatim into the JSON below. Do NOT re-derive, re-select, or modify any GT item. The Phase D approved plan is final — Phase E is only a formatting step.
+
+GT item format — use `type` to classify the decision:
+- {"type": "diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}
+- {"type": "procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}
+- {"type": "medication", "index": N, "drug": "..."}
+- {"type": "plan", "section": "...", "span": "..."}
+
+The `type` field determines which submit tool the model receives and how its submission is scored. Do not add a `source` field.
 
 available_agents rules — list only the agents whose information is essential for the doctor to make the decisions required at this stage:
 - "patient": include when direct patient history or symptom questioning is needed (typically Stage 1 and any stage where new patient-reported symptoms drive the decision)
@@ -17,23 +21,22 @@ available_agents rules — list only the agents whose information is essential f
 {
   "stages": [
     {
-      "label": "short name — describe the clinical phase or challenge, NOT the answer (no procedure names, drug names, or findings that are part of GT)",
+      "label": "generic admission phase only — use temporal position, not clinical content. Examples: 'Initial Presentation', 'Inpatient Management', 'Discharge Planning'. Never include diagnoses, procedures, drugs, or findings.",
       "index_range": [start, end],
       "trigger": {"agent": "patient"|"nurse", "context": "one sentence: the clinical fact that opens this stage"},
       "decision_required": "one sentence: what must the doctor decide at this stage",
       "available_agents": ["patient"|"nurse"|"lab"|"history"],
       "gt": [
-        {"source": "icd_diagnosis", "icd_code": "...", "icd_version": 9, "display": "..."},
-        {"source": "icd_procedure", "index": N, "icd_code": "...", "icd_version": 9, "display": "..."},
-        {"source": "medication", "index": N, "drug": "..."},
-        {"source": "note_section", "section": "...", "span": "..."}
-      ],
-      "gt_type": "diagnosis"|"management_plan"|"discharge_plan"
+        {"type": "diagnosis", "icd_code": "...", "icd_version": 9, "display": "..."},
+        {"type": "procedure", "index": N, "icd_code": "...", "icd_version": 9, "display": "..."},
+        {"type": "medication", "index": N, "drug": "..."},
+        {"type": "plan", "section": "...", "span": "..."}
+      ]
     }
   ]
 }
 
 Trigger rules:
-- Stage 1: agent = "patient", context = one-sentence factual summary of the presenting complaint and key history from the HPI.
-- Later stages: agent = "nurse", context = one-sentence factual summary of the clinical milestone that closes the previous phase and opens this one (e.g. "EGD completed showing gastritis with hemorrhage; anticoagulation now being adjusted").
+- Stage 1: agent = "patient", context = one-sentence factual summary of the presenting complaint and key history from the HPI. Do NOT include diagnoses or findings — describe only symptoms and reason for presentation.
+- Later stages: agent = "nurse", context = one-sentence description of the clinical event or procedure that closed the previous phase (e.g. "the endoscopy procedure has been completed" or "the patient has been stabilized and transferred out of the ICU"). CRITICAL: describe ONLY what happened (the event/procedure/transition), NEVER the result, finding, or diagnosis. The MUT must discover findings by querying agents — do not give them away in the trigger.
 Write only clinical facts. Do not write dialogue. The agent will use this context to speak in their own voice.

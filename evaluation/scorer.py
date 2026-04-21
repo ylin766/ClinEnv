@@ -33,12 +33,12 @@ from evaluation.scorers.note_scoring import score_note_section
 
 def _icd_vocab(gt_item: dict) -> str:
     """Return the pyhealth vocabulary name for a GT item."""
-    src     = gt_item["source"]
+    gt_type = gt_item.get("type", "")
     version = gt_item.get("icd_version", 9)
-    if src == "icd_procedure":
+    if gt_type == "procedure":
         return "ICD9PROC" if version == 9 else "ICD10PCS"
     else:
-        return "ICD9CM"   if version == 9 else "ICD10CM"
+        return "ICD9CM" if version == 9 else "ICD10CM"
 
 
 # ------------------------------------------------------------------ #
@@ -48,22 +48,26 @@ def _icd_vocab(gt_item: dict) -> str:
 def _score_pair(gt_item: GTItem, submission: Submission) -> float:
     """Score one (GT item, submission) pair. Returns float in [0, 1].
 
-    Only scores type-compatible pairs; mismatched types return 0.
+    Driven by gt type. Type mismatch returns 0.
     """
-    src      = gt_item.get("source", "")
+    gt_type  = gt_item.get("type", "")
     sub_type = submission.get("type", "")
     value    = submission.get("value", "")
 
-    if src == "icd_procedure" and sub_type == "procedure":
+    if gt_type != sub_type:
+        return 0.0
+
+    if gt_type in ("procedure", "diagnosis"):
         return score_icd(value, gt_item["icd_code"], _icd_vocab(gt_item))
 
-    if src == "icd_diagnosis" and sub_type == "diagnosis":
-        return score_icd(value, gt_item["icd_code"], _icd_vocab(gt_item))
-
-    if src == "medication" and sub_type == "medication":
+    if gt_type == "medication":
         return score_medication(value, gt_item.get("drug", ""))
 
-    return 0.0  # type mismatch or unhandled source
+    if gt_type == "plan":
+        result = score_note_section(gt_item.get("span", ""), [submission])
+        return result["score"]
+
+    return 0.0
 
 
 # ------------------------------------------------------------------ #
@@ -73,40 +77,27 @@ def _score_pair(gt_item: GTItem, submission: Submission) -> float:
 def _match(gt_items: list[GTItem], submissions: list[Submission]) -> list[dict]:
     """Optimal one-to-one matching via Hungarian algorithm.
 
-    note_section items are excluded here and scored separately.
+    All GT types use the same pair-scoring + Hungarian matching.
     Returns a list of match dicts: {gt_item, submission, score, method}.
     """
-    scorable = [g for g in gt_items if g.get("source") != "note_section"]
-    notes    = [g for g in gt_items if g.get("source") == "note_section"]
+    if not gt_items or not submissions:
+        return []
 
-    matches: list[dict] = []
+    matrix = np.array(
+        [[_score_pair(g, s) for s in submissions] for g in gt_items],
+        dtype=float,
+    )
+    row_ind, col_ind = linear_sum_assignment(matrix, maximize=True)
 
-    # ── Scorable GT items ─────────────────────────────────────────────
-    if scorable and submissions:
-        matrix = np.array(
-            [[_score_pair(g, s) for s in submissions] for g in scorable],
-            dtype=float,
-        )
-        row_ind, col_ind = linear_sum_assignment(matrix, maximize=True)
-        for r, c in zip(row_ind, col_ind):
-            matches.append({
-                "gt_item":    scorable[r],
-                "submission": submissions[c],
-                "score":      float(matrix[r, c]),
-                "method":     "hungarian",
-            })
-
-    # ── note_section items (pool-based, not one-to-one) ───────────────
-    for g in notes:
-        result = score_note_section(g.get("span", ""), submissions)
+    matches = []
+    for r, c in zip(row_ind, col_ind):
+        gt_type = gt_items[r].get("type", "")
         matches.append({
-            "gt_item":    g,
-            "submission": {"matched_text": result["matched_submission"]},
-            "score":      result["score"],
-            "method":     "llm_binary",
-            "reason":     result.get("reason", ""),
+            "gt_item":    gt_items[r],
+            "submission": submissions[c],
+            "score":      float(matrix[r, c]),
+            "method":     "llm_binary" if gt_type == "plan" else "hungarian",
         })
-
     return matches
 
 

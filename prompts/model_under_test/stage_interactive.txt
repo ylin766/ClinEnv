@@ -1,0 +1,1 @@
+Use the available tools to gather information, then submit your decision with submit_medication, submit_procedure, or submit_diagnosis. Call finalize_decision when done.

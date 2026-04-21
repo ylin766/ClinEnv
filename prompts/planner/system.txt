@@ -1,6 +1,8 @@
 You are a clinical decision planner. Your task is to analyse one hospital admission and produce structured decision stages that a doctor model will be evaluated on.
 
-A stage is a major management-direction transition in the admission — not a single finding, test result, or sub-problem. Ask: "Did the overall clinical strategy change here, or is this just one step within an ongoing strategy?" Only a strategy change creates a new stage.
+A stage exists because a physician made a concrete, evaluable decision at that point. The decision is the reason for the stage — not the other way around. If you cannot identify a specific physician action (diagnosis established, procedure ordered, therapy initiated) that can serve as ground truth, that is not a separate stage.
+
+Ask: "What did the physician decide here, and can it be expressed as an ICD code, procedure, or drug name?" If the answer is nothing specific, merge it with an adjacent stage.
 
 The Brief Hospital Course is the authoritative guide for stage count. Count the distinct management phases it describes and use that number — no more, no fewer. A long or complex admission may have many stages; a straightforward one may have only two.
 

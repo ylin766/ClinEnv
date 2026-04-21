@@ -14,14 +14,15 @@ _PROMPT = Path(__file__).parent.parent.parent / "prompts" / "env" / "nurse_agent
 
 # Fields to surface per source table
 _TABLE_SUMMARY: dict[str, list[str]] = {
-    "ehr_chartevents_df":      ["label", "value", "valueuom", "event_time"],
-    "ehr_datetime_events_df":  ["label", "value", "event_time"],
-    "ehr_inputevents_df":      ["label", "amount", "amountuom", "event_time"],
-    "ehr_outputevents_df":     ["label", "value", "valueuom", "event_time"],
-    "ehr_ingredientevents_df": ["label", "amount", "amountuom", "event_time"],
-    "ehr_procedureevents_df":  ["label", "value", "event_time"],
-    "hosp_emar_detail_df":     ["medication", "administration_type", "event_txt", "event_time"],
-    "radiology_note":          ["text"],   # full report text; no separate label field
+    "ehr_chartevents_df":       ["label", "value", "valueuom", "event_time"],
+    "ehr_datetime_events_df":   ["label", "value", "event_time"],
+    "ehr_inputevents_df":       ["label", "amount", "amountuom", "event_time"],
+    "ehr_outputevents_df":      ["label", "value", "valueuom", "event_time"],
+    "ehr_ingredientevents_df":  ["label", "amount", "amountuom", "event_time"],
+    "ehr_procedureevents_df":   ["label", "value", "event_time"],
+    "hosp_emar_detail_df":      ["medication", "administration_type", "event_txt", "event_time"],
+    "radiology_note":           ["text"],
+    "hosp_procedures_icd_df":   ["long_title_procedure", "icd_code", "event_time"],
 }
 
 

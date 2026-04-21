@@ -136,17 +136,6 @@ class AdmissionRecord:
         end = start + next_header.start() if next_header else len(note)
         return note[start:end].strip()
 
-    def get_table_on_date(self, table: str, date: str) -> list[dict]:
-        """
-        Return all events from `table` whose event_time starts with `date`
-        (format: YYYY-MM-DD).  Returns full event payloads.
-        """
-        return [
-            e for e in self.timeline
-            if e["source_table"] == table
-            and (e.get("event_time") or "").startswith(date)
-        ]
-
     def get_events_by_index(self, start: int, end: int) -> list[dict]:
         """
         Return a compact summary row for each event with index in [start, end].

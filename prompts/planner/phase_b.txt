@@ -1,32 +1,25 @@
-## Phase B — Anchor transitions to the event timeline
+## Phase B — Identify key physician decisions
 
-Call get_timeline_index to see all events. Note the index of the last event — this is total_events - 1 and must be the end of your final stage.
+Call get_timeline_index() and get_note_section("Brief Hospital Course") to understand the full admission.
 
-For each management phase you identified in Phase A, identify the transition action: the key procedure, medication cluster, or clinical milestone that marks the END of this phase and the beginning of the next.
+Your task: find every key physician decision made during this admission, in chronological order. These decisions will become the GT for each stage — so find them BEFORE defining any stage boundaries.
 
-Stage boundary rule (critical):
-- The transition action belongs to the NEXT stage, not the current one.
-- end[i] = the last information-gathering event BEFORE the transition action.
-- start[i+1] = the transition action itself (the first event of the new phase).
-- This means GT events for stage i must have index > end[i]. They are not yet visible to the model.
+**What counts as a key decision:**
+- A new procedure or intervention (use icd_procedure GT — find the exact event index)
+- A medication newly held or stopped due to a clinical event (use note_section GT from BHC)
+- A medication newly started or restarted after being held (use note_section GT from BHC)
+- Discharge diagnosis summary (use icd_diagnosis GT — call get_diagnoses)
 
-Example:
-  Stage 1 covers initial evaluation. The transition is a cardiac catheterization at index 27.
-  → Stage 1: [0, 26]  (model sees information up to index 26)
-  → GT for Stage 1: index 27 (cath) — not visible, model must predict it
-  → Stage 2: [27, N]  (cath is the opening event of Stage 2)
+**What is NOT a key decision:**
+- Daily pharmacy re-orders of the same drug (administrative, not clinical)
+- Routine maintenance medications continued unchanged
+- Lab values, vitals, imaging findings (inputs to decisions, not decisions)
 
-Hard constraints:
-- Stage 1 starts at index 0.
-- The final stage ends at the last event index (total_events - 1).
-- Ranges are contiguous: end[i] + 1 = start[i+1]. No gaps, no overlaps.
+**For each decision, record:**
+1. Clinical description (what the physician decided)
+2. Event index (for icd_procedure: the exact index; for note_section: N/A)
+3. GT citation (icd_procedure with index, OR note_section with exact BHC text, OR icd_diagnosis code)
 
-Use get_events_by_index or search_events to inspect any boundary you are unsure about.
+Use get_events_by_index or search_events to locate procedure events and verify indices.
 
-Write out the proposed ranges explicitly:
-  Stage 1 "label": [0, X]
-  Stage 2 "label": [X+1, Y]
-  ...
-  Stage N "label": [Z, total_events - 1]
-
-Do not output JSON yet.
+Output a numbered decision list before proceeding to Phase C. The last decision is always the discharge diagnoses (call get_diagnoses).

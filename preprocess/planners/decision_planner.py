@@ -29,7 +29,7 @@ _PHASES = [
     ("A", "phase_a.txt", "auto"),
     ("B", "phase_b.txt", "auto"),
     ("C", "phase_c.txt", "auto"),
-    ("D", "phase_d.txt", "none"),
+    ("D", "phase_d.txt", "auto"),
     ("E", "phase_e.txt",  "none"),
 ]
 

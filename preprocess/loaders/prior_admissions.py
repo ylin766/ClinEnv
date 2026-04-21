@@ -49,7 +49,10 @@ def load_prior_admissions(
         if hadm_id == str(current_hadm_id):
             continue
 
-        events: list[dict] = json.loads(json_file.read_text(encoding="utf-8"))
+        try:
+            events: list[dict] = json.loads(json_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue  # skip malformed source files
         admittime = dischtime = note_text = None
 
         for ev in events:

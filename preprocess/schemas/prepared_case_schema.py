@@ -11,37 +11,29 @@ Schema
   "hadm_id":    str,
   "stages": [
     {
-      "label":             str,
-      "index_range":       [int, int],
-      "trigger":           {"agent": "patient" | "nurse"},
-      "decision_required": str,
-      "gt_type":           "diagnosis" | "management_plan" | "discharge_plan",
+      "label":            str,
+      "index_range":      [int, int],
+      "trigger":          {"agent": "patient" | "nurse", "context": str},
+      "available_agents": [str, ...],
       "gt": [
-        {"source": "icd_diagnosis",  "icd_code": str, "icd_version": int, "display": str}
-        {"source": "icd_procedure",  "index": int, "icd_code": str, "icd_version": int, "display": str}
-        {"source": "medication",     "index": int, "drug": str}
-        {"source": "note_section",   "section": str, "span": str}
+        {"type": "diagnosis",  "icd_code": str, "icd_version": int, "display": str}
+        {"type": "procedure",  "index": int, "icd_code": str, "icd_version": int, "display": str}
+        {"type": "medication", "index": int, "drug": str}
+        {"type": "plan",       "section": str, "span": str}
       ],
       "readviews": {
-        "patient": {
-          "chief_complaint":      str | None,
-          "hpi":                  str | None,
-          "past_medical_history": str | None,
-          "age":                  int | None,
-          "gender":               str | None
-        },
-        "nurse": {"events": [...]},
-        "lab":   {"events": [...]}
+        "patient": {"chief_complaint": str|None, "hpi": str|None, ...},
+        "nurse":   {"events": [...]},
+        "lab":     {"events": [...]}
       }
     }
   ]
 }
 """
 
-_VALID_AGENTS    = {"patient", "nurse"}
-_VALID_GT_TYPES  = {"diagnosis", "management_plan", "discharge_plan"}
-_VALID_GT_SRC    = {"icd_diagnosis", "icd_procedure", "medication", "note_section"}
-_VALID_AGENTS_RV = {"patient", "nurse", "lab"}
+_VALID_TRIGGER_AGENTS = {"patient", "nurse"}
+_VALID_GT_TYPES       = {"procedure", "diagnosis", "medication", "plan"}
+_VALID_READVIEW_AGENTS = {"patient", "nurse", "lab"}
 
 
 def _err(path: str, msg: str) -> str:
@@ -75,8 +67,7 @@ def validate_prepared_case(payload) -> list[str]:
     for i, stage in enumerate(stages):
         p = f"stages[{i}]"
 
-        # required keys
-        for key in ("label", "index_range", "trigger", "decision_required", "gt", "gt_type", "readviews"):
+        for key in ("label", "index_range", "trigger", "gt", "readviews"):
             if key not in stage:
                 errors.append(_err(p, f"missing key '{key}'"))
 
@@ -94,12 +85,8 @@ def validate_prepared_case(payload) -> list[str]:
 
         # trigger
         trigger = stage.get("trigger", {})
-        if not isinstance(trigger, dict) or trigger.get("agent") not in _VALID_AGENTS:
-            errors.append(_err(p + ".trigger", f"agent must be one of {_VALID_AGENTS}"))
-
-        # gt_type
-        if stage.get("gt_type") not in _VALID_GT_TYPES:
-            errors.append(_err(p + ".gt_type", f"must be one of {_VALID_GT_TYPES}"))
+        if not isinstance(trigger, dict) or trigger.get("agent") not in _VALID_TRIGGER_AGENTS:
+            errors.append(_err(p + ".trigger", f"agent must be one of {_VALID_TRIGGER_AGENTS}"))
 
         # gt items
         gt = stage.get("gt", [])
@@ -108,22 +95,20 @@ def validate_prepared_case(payload) -> list[str]:
         else:
             for j, item in enumerate(gt):
                 gp = f"{p}.gt[{j}]"
-                src = item.get("source")
-                if src not in _VALID_GT_SRC:
-                    errors.append(_err(gp, f"source must be one of {_VALID_GT_SRC}"))
-                elif src == "icd_diagnosis":
+                gt_type = item.get("type")
+                if gt_type not in _VALID_GT_TYPES:
+                    errors.append(_err(gp, f"type must be one of {_VALID_GT_TYPES}, got {gt_type!r}"))
+                elif gt_type in ("procedure", "diagnosis"):
                     for k in ("icd_code", "icd_version", "display"):
                         if k not in item:
                             errors.append(_err(gp, f"missing '{k}'"))
-                elif src == "icd_procedure":
-                    for k in ("index", "icd_code", "icd_version", "display"):
-                        if k not in item:
-                            errors.append(_err(gp, f"missing '{k}'"))
-                elif src == "medication":
+                    if gt_type == "procedure" and "index" not in item:
+                        errors.append(_err(gp, "missing 'index'"))
+                elif gt_type == "medication":
                     for k in ("index", "drug"):
                         if k not in item:
                             errors.append(_err(gp, f"missing '{k}'"))
-                elif src == "note_section":
+                elif gt_type == "plan":
                     for k in ("section", "span"):
                         if k not in item:
                             errors.append(_err(gp, f"missing '{k}'"))
@@ -133,8 +118,8 @@ def validate_prepared_case(payload) -> list[str]:
         if not isinstance(rv, dict):
             errors.append(_err(p + ".readviews", "must be a dict"))
         else:
-            for agent in _VALID_AGENTS_RV:
+            for agent in _VALID_READVIEW_AGENTS:
                 if agent not in rv:
-                    errors.append(_err(p + f".readviews", f"missing agent '{agent}'"))
+                    errors.append(_err(p + ".readviews", f"missing agent '{agent}'"))
 
     return errors

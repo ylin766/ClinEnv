@@ -14,11 +14,13 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
-from env import run_episode, save_episode_log
+import json
+
+from env import run_episode
 from env.readers.prepared_case_reader import load_prepared_case, load_from_manifest
 from evaluation import score_episode
 
-_LOG_DIR = Path(__file__).parent.parent / "data" / "episodes"
+_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def main() -> int:
@@ -31,7 +33,7 @@ def main() -> int:
     parser.add_argument("--model",  default=None,       help="OpenAI model override")
     parser.add_argument("--mode",   default="direct",   choices=["direct", "interactive"],
                         help="Environment mode (default: direct)")
-    parser.add_argument("--quiet",  action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     verbose = not args.quiet
@@ -50,13 +52,53 @@ def main() -> int:
     episode_log = run_episode(case, model=args.model, mode=args.mode, verbose=verbose)
     scored      = score_episode(episode_log)
 
-    log_path = _LOG_DIR / case["subject_id"] / f"{case['hadm_id']}.json"
-    save_episode_log(log_path, scored)
+    sid  = case["subject_id"]
+    hid  = case["hadm_id"]
+    mode = args.mode
+
+    dialogue_path = _DATA_DIR / "dialogue" / sid / f"{hid}_{mode}.json"
+    output_path   = _DATA_DIR / "output"   / sid / f"{hid}_{mode}.json"
+    dialogue_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    dialogue = {
+        "subject_id": scored["subject_id"],
+        "hadm_id":    scored["hadm_id"],
+        "model":      scored["model"],
+        "mode":       mode,
+        "stages": [
+            {"label": s["label"], "index_range": s["index_range"], "messages": s.get("messages", [])}
+            for s in scored["stages"]
+        ],
+    }
+    output = {
+        "subject_id":    scored["subject_id"],
+        "hadm_id":       scored["hadm_id"],
+        "model":         scored["model"],
+        "mode":          mode,
+        "overall_score": scored["overall_score"],
+        "overall_hits":  scored["overall_hits"],
+        "overall_total": scored["overall_total"],
+        "stages": [
+            {
+                "label":       s["label"],
+                "index_range": s["index_range"],
+                "gt":          s["gt"],
+                "submissions":        s.get("submissions", []),
+                "score":              s.get("score", {}),
+            }
+            for s in scored["stages"]
+        ],
+    }
+
+    dialogue_path.write_text(json.dumps(dialogue, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n{'='*60}")
     print(f"Episode complete.")
     print(f"Overall score: {scored['overall_hits']}/{scored['overall_total']} (F1={scored['overall_score']})")
-    print(f"Log saved to: {log_path}")
+    print(f"Dialogue: {dialogue_path}")
+    print(f"Output:   {output_path}")
 
     return 0
 

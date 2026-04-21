@@ -11,15 +11,19 @@ Mode = Literal["direct", "interactive"]
 
 
 # ------------------------------------------------------------------ #
+# Shared type vocabulary                                               #
+# ------------------------------------------------------------------ #
+
+DecisionType = Literal["procedure", "diagnosis", "medication", "plan"]
+
+
+# ------------------------------------------------------------------ #
 # Submission                                                           #
 # ------------------------------------------------------------------ #
 
-SubmissionType = Literal["diagnosis", "procedure", "medication"]
-
-
 class Submission(TypedDict):
-    type:      SubmissionType
-    value:     str   # the submitted clinical text (diagnosis / procedure / drug name)
+    type:      DecisionType
+    value:     str   # submitted clinical text (procedure / diagnosis / drug / plan)
     reasoning: str
 
 
@@ -27,24 +31,33 @@ class Submission(TypedDict):
 # Ground truth                                                         #
 # ------------------------------------------------------------------ #
 
-GTSource = Literal["icd_diagnosis", "icd_procedure", "medication", "note_section"]
+class GTItem(TypedDict, total=False):
+    """One ground-truth item.
 
+    Required:
+        type  — decision type; drives submit tool selection and scoring.
 
-class _GTItemBase(TypedDict):
-    source: GTSource
+    Value fields (present according to type):
+        procedure / diagnosis : icd_code, icd_version, display, index
+        medication            : drug, index
+        plan                  : section, span
 
-
-class GTItem(_GTItemBase, total=False):
-    """One ground-truth item. Fields present depend on source:
-
-    icd_diagnosis / icd_procedure : icd_code, icd_version
-    medication                    : drug
-    note_section                  : span
+    Metadata (optional, not used for routing):
+        source  — original data table / format (e.g. "icd_procedure", "note_section")
     """
+    type:        DecisionType  # required
+    # procedure / diagnosis
     icd_code:    str
     icd_version: int
+    display:     str
+    index:       int
+    # medication
     drug:        str
+    # plan
+    section:     str
     span:        str
+    # metadata only
+    source:      str
 
 
 # ------------------------------------------------------------------ #

@@ -1,0 +1,11 @@
+{patient_ctx}
+
+---
+
+## Clinical Events (cumulative)
+
+{events}
+
+---
+
+Submit using: {submit_tools}, then call finalize_decision.

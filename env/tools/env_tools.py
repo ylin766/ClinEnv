@@ -1,8 +1,8 @@
 """Environment tools for the model under test.
 
-Two tool sets:
-  DIRECT_TOOLS      — direct mode: only submit + finalize
-  get_interactive_tools(has_history) — interactive mode: agents + history + submit + finalize
+Tool sets:
+  get_submit_tools(required_types)   — direct mode: subset of submit tools + finalize
+  get_interactive_tools(...)         — interactive mode: agents + submit + finalize
 
 dispatch(name, args, stage, ctx) handles both modes.
 ctx keys (interactive only): client, model, prior_admissions
@@ -25,17 +25,21 @@ _SUBMIT_TOOLS = [
         "function": {
             "name": "submit_medication",
             "description": (
-                "Submit one medication you would order or continue. "
-                "Use the standard drug name (e.g. 'Aspirin', 'Metoprolol'). "
-                "Call once per medication."
+                "Submit one medication decision — starting, continuing, holding, or stopping a drug. "
+                "Use the standard drug name. Call once per medication."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "drug_name": {"type": "string", "description": "Standard drug name."},
+                    "action": {
+                        "type": "string",
+                        "enum": ["start", "continue", "hold", "stop"],
+                        "description": "The action taken: start (new order), continue (ongoing), hold (temporarily suspended), stop (permanently discontinued).",
+                    },
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
-                "required": ["drug_name", "reasoning"],
+                "required": ["drug_name", "action", "reasoning"],
             },
         },
     },
@@ -74,6 +78,25 @@ _SUBMIT_TOOLS = [
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
                 "required": ["procedure", "reasoning"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_plan",
+            "description": (
+                "Submit a free-text clinical management plan — use when the decision does not map "
+                "cleanly to a single medication, diagnosis, or procedure. Describe the overall "
+                "management approach in plain clinical language."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {"type": "string", "description": "Free-text description of your management plan."},
+                    "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
+                },
+                "required": ["plan", "reasoning"],
             },
         },
     },
@@ -130,14 +153,11 @@ _INTERACTION_TOOLS = [
         "type": "function",
         "function": {
             "name": "order_lab",
-            "description": (
-                "Request a specific laboratory or diagnostic result by name. "
-                "Returns available results or indicates the test is unavailable."
-            ),
+            "description": "Request a specific laboratory or diagnostic result by name.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "test_name": {"type": "string", "description": "Name of the test to retrieve."},
+                    "test_name": {"type": "string", "description": "Name of the lab test or component to retrieve."},
                 },
                 "required": ["test_name"],
             },
@@ -181,9 +201,7 @@ _HISTORY_TOOLS = [
 # Public tool-set builders                                             #
 # ------------------------------------------------------------------ #
 
-DIRECT_TOOLS: list[dict] = _SUBMIT_TOOLS
-
-SUBMIT_TOOLS  = {"submit_medication", "submit_diagnosis", "submit_procedure"}
+SUBMIT_TOOLS  = {"submit_medication", "submit_diagnosis", "submit_procedure", "submit_plan"}
 FINALIZE_TOOL = "finalize_decision"
 
 # Map agent name → tool schemas it contributes
@@ -194,21 +212,47 @@ _AGENT_TOOLS: dict[str, list[dict]] = {
     "history": _HISTORY_TOOLS,
 }
 
+_SUBMIT_BY_TYPE: dict[str, dict] = {
+    t["function"]["name"].replace("submit_", ""): t
+    for t in _SUBMIT_TOOLS
+    if t["function"]["name"].startswith("submit_")
+}
+_FINALIZE_SCHEMA = next(t for t in _SUBMIT_TOOLS if t["function"]["name"] == "finalize_decision")
 
-def get_interactive_tools(available_agents: list[str], has_history: bool) -> list[dict]:
+
+def get_submit_tools(required_types: set[str]) -> list[dict]:
+    """Return only the submit tools that match the stage's GT types, plus finalize.
+
+    required_types: set of strings from {"medication", "diagnosis", "procedure", "plan"}.
+    If empty, all submit tools are included as a fallback.
+    """
+    if not required_types:
+        return _SUBMIT_TOOLS  # fallback — include all
+    tools = [_SUBMIT_BY_TYPE[t] for t in required_types if t in _SUBMIT_BY_TYPE]
+    tools.append(_FINALIZE_SCHEMA)
+    return tools
+
+
+def get_interactive_tools(
+    available_agents: list[str],
+    has_history: bool,
+    required_types: set[str] | None = None,
+) -> list[dict]:
     """Return the interactive tool set for the given activated agents.
 
     available_agents: list of agent names active for this stage
                       (subset of "patient", "nurse", "lab", "history")
     has_history:      whether the case has prior admissions; gates history tools
                       even when "history" is in available_agents
+    required_types:   GT types for this stage; restricts available submit tools.
+                      Pass None to include all submit tools.
     """
     tools: list[dict] = []
     for agent in available_agents:
         if agent == "history" and not has_history:
             continue
         tools.extend(_AGENT_TOOLS.get(agent, []))
-    return tools + _SUBMIT_TOOLS
+    return tools + get_submit_tools(required_types or set())
 
 
 # ------------------------------------------------------------------ #
@@ -230,8 +274,11 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
         value = args.get("drug_name", "").strip()
         if not value:
             return {"error": "drug_name is required"}
+        action = args.get("action", "start")
         return {"status": "recorded", "type": "medication",
-                "value": value, "reasoning": args.get("reasoning", "")}
+                "value": value, "action": action,
+                "matched_text": f"{action} {value}",
+                "reasoning": args.get("reasoning", "")}
 
     if name == "submit_diagnosis":
         value = args.get("diagnosis", "").strip()
@@ -245,6 +292,13 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
         if not value:
             return {"error": "procedure is required"}
         return {"status": "recorded", "type": "procedure",
+                "value": value, "reasoning": args.get("reasoning", "")}
+
+    if name == "submit_plan":
+        value = args.get("plan", "").strip()
+        if not value:
+            return {"error": "plan is required"}
+        return {"status": "recorded", "type": "plan",
                 "value": value, "reasoning": args.get("reasoning", "")}
 
     if name == "finalize_decision":
@@ -273,7 +327,7 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
         test_name = args.get("test_name", "").strip()
         if not test_name:
             return {"error": "test_name is required"}
-        result = lab_agent.search(rv.get("lab", {}), test_name)
+        result = lab_agent.search(rv.get("lab", {}), test_name, client, model)
         return {"_speaker": "lab", **result}
 
     # ── Interactive: history tools ────────────────────────────────────

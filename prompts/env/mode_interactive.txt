@@ -12,4 +12,11 @@ Workflow:
 2. When you have a clear enough clinical picture, submit your decisions with submit_diagnosis, submit_procedure, and/or submit_medication.
 3. Call finalize_decision to complete this clinical encounter.
 
+At discharge planning stages: before submitting, explicitly review the full prior-stage context in this conversation — look at every confirmed decision (medications held or restarted, procedures performed, anticoagulation changes) and ask yourself which underlying diagnoses those decisions imply. Then submit every diagnosis that was established or actively managed during this admission — not just the primary complaint. This includes:
+- The primary presenting condition (e.g. GI bleeding source)
+- Diagnoses confirmed by procedures
+- Comorbidities that required medication adjustment, holding, or restart (e.g. atrial fibrillation if anticoagulation was managed, heart failure if diuretics were adjusted, CAD if antiplatelet therapy was modified)
+- Any new conditions identified during the stay
+Call submit_diagnosis once per diagnosis. An incomplete discharge diagnosis list is a serious error.
+
 If you reach the turn limit without finalizing, submit your best judgment based on available information and call finalize_decision.

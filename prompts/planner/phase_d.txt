@@ -1,18 +1,35 @@
-## Phase D — Self-check
+## Phase D — Validate
 
-Review your proposed stages. For each check below, state PASS or FAIL and explain briefly.
+Run the two mechanical checks first, then two manual checks.
 
-1. **Stage count**: Does the number of stages match the number of distinct management phases in the BHC? (A reaction to a finding within a phase is not a new stage.)
+**Step 1 — Mechanical tools (required):**
+Call `validate_gt_indices` with the full stages array. Each stage must include `label`, `index_range`, and `gt` as a **list of structured dicts** (not prose strings). Use Phase E's exact GT format:
+- `{"type": "diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}`
+- `{"type": "procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}`
+- `{"type": "medication", "index": N, "drug": "..."}`
+- `{"type": "plan", "section": "...", "span": "..."}`
 
-2. **Index continuity**: Do the ranges cover [0, total_events - 1] with no gaps and no overlaps?
-   List them: Stage 1 [x, y], Stage 2 [y+1, z], ..., Stage N [..., total_events - 1].
+Then call `validate_gt_novelty` with the same array. If either returns FAIL, fix the affected stages and re-call both tools until both return PASS.
 
-3. **GT validity**: For each GT item — is it a physician decision or order? Flag any item that is a patient symptom, lab value, vital sign, or imaging finding and replace it with a valid physician action from the same stage. Also flag any medication with frequency "X1", "X1:PRN", or "ONCE" — these are single-dose emergency standby drugs (not deliberate decisions) and must be removed from GT.
+**Step 2 — Manual checks (state PASS or FAIL for each):**
 
-3b. **GT index vs stage boundary**: For each GT item with an index — is that index STRICTLY GREATER THAN the stage's end index? If a GT item's index falls within the stage's visible range [start, end], the model can already see it and it cannot be a prediction target. Move the stage boundary so that end[i] < GT index, or remove the item from GT.
+A. **GT validity**: Is every GT item a physician decision or order? Lab values, vital signs, imaging findings, and emergency standby drugs (frequency "X1", "X1:PRN", "ONCE") are NOT valid GT — replace with the physician action that resulted from them.
 
-4. **GT source tier**: For each GT item using `note_section` — could it instead be expressed as an ICD diagnosis code, ICD procedure code, or medication name? If yes, replace it with the higher-tier source. Only `note_section` items that genuinely cannot be captured by a code or drug name are acceptable.
+B. **Trigger safety**: Every trigger context must be non-empty and must NOT reveal the GT for that stage. Fail if:
+   - context is empty or missing
+   - context names the procedure/medication/diagnosis that IS the GT (e.g. trigger says "patient had endoscopy" when GT is endoscopy)
+   - context describes the clinical outcome rather than the opening transition (e.g. "patient stabilized after transfusion" reveals the treatment)
+   Triggers describe ONLY the event that opens the encounter — the presenting symptom, the handoff, or the transition into this stage. Rewrite any failing trigger.
 
-5. **GT provenance**: Is every GT item something that was returned by a tool call in this session?
+If any manual check fails, revise and re-run the mechanical tools.
 
-If any check fails, revise the affected stages now and state what changed. Do not output JSON until all checks pass.
+**After all checks pass**, output the APPROVED PLAN:
+
+```
+APPROVED STAGE 1: <label>
+  range: [start, end]
+  gt: <list each GT item with type, index if applicable, and value>
+APPROVED STAGE 2: ...
+```
+
+Phase E formats this into JSON exactly as written — do not change GT items in Phase E.

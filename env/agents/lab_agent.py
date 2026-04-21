@@ -1,11 +1,19 @@
-"""Lab agent — data lookup (no LLM).
+"""Lab agent — LLM-backed lookup.
 
-Searches the lab readview for tests matching the doctor's request
-and returns structured results. If a test has not been ordered or
-resulted, returns not-available.
+The physician states what they want in natural language.
+The agent uses an LLM to decide which available test labels match the request,
+then returns the corresponding results.
+
+If no matching results exist, returns not-available.
 """
 
 from __future__ import annotations
+import json
+from pathlib import Path
+
+from openai import OpenAI
+
+_PROMPT = Path(__file__).parent.parent.parent / "prompts" / "env" / "lab_agent.txt"
 
 
 def _label(ev: dict) -> str:
@@ -35,20 +43,51 @@ def _format_result(ev: dict) -> dict:
     return {k: v for k, v in result.items() if v is not None}
 
 
-def search(readview: dict, test_name: str) -> dict:
-    """Look up lab results for a specific test name (case-insensitive).
+def search(readview: dict, test_name: str, client: OpenAI, model: str) -> dict:
+    """Look up lab results for a physician's request using LLM-based matching.
 
-    Checks whether the ordered test name appears in any result label.
-    Returns the result if found, or not-available if the test was not
-    performed or did not result for this patient.
+    The LLM is given the list of available test labels and the physician's
+    request, and returns which labels (if any) correspond to the request.
 
     Returns:
         {"found": True,  "results": [...]}   if matched
         {"found": False, "message": "..."}   if not found
     """
-    kw      = test_name.lower().strip()
-    events  = readview.get("events", [])
-    matches = [ev for ev in events if kw in _label(ev).lower()]
+    events = readview.get("events", [])
+    if not events:
+        return {
+            "found":   False,
+            "message": f"No lab results are available for this patient at this time.",
+        }
+
+    # Build a deduplicated list of available labels for the LLM to reason over
+    available_labels = sorted({_label(ev) for ev in events if _label(ev)})
+
+    system = _PROMPT.read_text(encoding="utf-8").strip()
+    user_msg = (
+        f"Available test labels:\n{json.dumps(available_labels)}\n\n"
+        f"Physician request: \"{test_name}\"\n\n"
+        "Return a JSON object: {\"matches\": [list of matching label strings]} "
+        "or {\"matches\": []} if none match."
+    )
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_msg},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+        max_completion_tokens=200,
+    )
+
+    try:
+        matched_labels = set(json.loads(resp.choices[0].message.content).get("matches", []))
+    except Exception:
+        matched_labels = set()
+
+    matches = [ev for ev in events if _label(ev) in matched_labels]
     if not matches:
         return {
             "found":   False,
