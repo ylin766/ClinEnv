@@ -4,7 +4,7 @@ Public interface (consumed by evaluation/ and external runners):
 
     from env import run_episode, save_episode_log
 
-    episode_log = run_episode(case, model="gpt-4o", verbose=True)
+    episode_log = run_episode(case, model="gpt-5.4-mini-2026-03-17", verbose=True)
     save_episode_log("data/episodes/subj/hadm.json", episode_log)
 
 Episode log schema

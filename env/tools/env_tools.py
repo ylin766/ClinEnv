@@ -25,21 +25,25 @@ _SUBMIT_TOOLS = [
         "function": {
             "name": "submit_medication",
             "description": (
-                "Submit one medication decision — starting, continuing, holding, or stopping a drug. "
-                "Use the standard drug name. Call once per medication."
+                "Submit a medication decision. Use the appropriate action:\n"
+                "- 'start': order a drug for the first time in response to a clinical finding\n"
+                "- 'stop': discontinue a drug the patient is currently taking\n"
+                "- 'increase_dose': increase the dose of a drug the patient is currently taking\n"
+                "- 'decrease_dose': decrease the dose of a drug the patient is currently taking\n"
+                "Do NOT use submit_plan for medication changes — use this tool for all drug decisions."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "drug_name": {"type": "string", "description": "Standard drug name."},
                     "action": {
                         "type": "string",
-                        "enum": ["start", "continue", "hold", "stop"],
-                        "description": "The action taken: start (new order), continue (ongoing), hold (temporarily suspended), stop (permanently discontinued).",
+                        "enum": ["start", "stop", "increase_dose", "decrease_dose"],
+                        "description": "The medication action being taken.",
                     },
+                    "drug_name": {"type": "string", "description": "Standard drug name."},
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
-                "required": ["drug_name", "action", "reasoning"],
+                "required": ["action", "drug_name", "reasoning"],
             },
         },
     },
@@ -86,15 +90,16 @@ _SUBMIT_TOOLS = [
         "function": {
             "name": "submit_plan",
             "description": (
-                "Submit a free-text clinical management plan — use when the decision does not map "
-                "cleanly to a single medication, diagnosis, or procedure. Describe the overall "
-                "management approach in plain clinical language."
+                "Submit ONE clinical management decision as a concise statement. "
+                "Each distinct decision requires a separate call — do not combine multiple decisions into one submission. "
+                "Examples of one decision: 'hold anticoagulation given active bleeding', "
+                "'transfuse 1 unit PRBC for symptomatic anemia', 'consult urology for hematuria management'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan": {"type": "string", "description": "Free-text description of your management plan."},
-                    "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
+                    "plan": {"type": "string", "description": "One clinical management decision as a concise statement."},
+                    "reasoning": {"type": "string", "description": "Brief clinical reasoning for this specific decision."},
                 },
                 "required": ["plan", "reasoning"],
             },
@@ -271,13 +276,12 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
 
     # ── Submit tools ─────────────────────────────────────────────────
     if name == "submit_medication":
+        action = args.get("action", "start").strip()
         value = args.get("drug_name", "").strip()
         if not value:
             return {"error": "drug_name is required"}
-        action = args.get("action", "start")
         return {"status": "recorded", "type": "medication",
-                "value": value, "action": action,
-                "matched_text": f"{action} {value}",
+                "action": action, "value": value,
                 "reasoning": args.get("reasoning", "")}
 
     if name == "submit_diagnosis":

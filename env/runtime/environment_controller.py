@@ -153,7 +153,16 @@ def _build_stage_prompt(stage: dict, mode: Mode, hint_counts: bool = False) -> s
     if mode == "interactive":
         label    = stage.get("label", "")
         header   = f"## {label}\n\n" if label else ""
-        return header + _STAGE_INTERACTIVE.read_text(encoding="utf-8")
+        body     = _STAGE_INTERACTIVE.read_text(encoding="utf-8")
+        if hint_counts:
+            from collections import Counter
+            gt_types = [g["type"] for g in stage.get("gt", []) if g.get("type")]
+            counts = Counter(gt_types)
+            hints = "\n\nRequired submissions for this stage:\n" + "\n".join(
+                f"- {t}: {c}" for t, c in counts.items()
+            )
+            body += hints
+        return header + body
 
     # direct mode — full cumulative chart up to this stage's end
     from collections import Counter
@@ -536,7 +545,9 @@ def run_stage(
 
             if name in SUBMIT_TOOLS and result.get("status") == "recorded":
                 duplicate = any(
-                    s.get("type") == result.get("type") and s.get("value") == result.get("value")
+                    s.get("type") == result.get("type")
+                    and s.get("value") == result.get("value")
+                    and s.get("action") == result.get("action")
                     for s in submissions
                 )
                 if not duplicate:

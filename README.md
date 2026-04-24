@@ -49,7 +49,7 @@ python -m env.main --subject-id 10511716 --hadm-id 24341177 --mode interactive
 **From manifest:**
 ```bash
 python -m env.main --manifest data/cases/manifest.jsonl --index 0
-python -m env.main --manifest data/cases/manifest.jsonl --index 0 --model gpt-4o
+python -m env.main --manifest data/cases/manifest.jsonl --index 0 --model gpt-5.4-mini-2026-03-17
 ```
 
 Output:

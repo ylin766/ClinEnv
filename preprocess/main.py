@@ -20,7 +20,7 @@ from preprocess.loaders.ehr_loader import load_admission
 from preprocess.loaders.prior_admissions import load_prior_admissions
 from preprocess.planners.decision_planner import plan_decision_points
 from preprocess.readviews.readview_builder import build_readviews
-from preprocess.writers.prepared_case_writer import write_prepared_case, update_manifest
+from preprocess.writers.prepared_case_writer import write_plan, write_prepared_case, update_manifest
 
 DATA_ROOT = str(Path(__file__).parent.parent / "mimic-ext-time-series" / "Merge" / "ehr_by_subject")
 OUT_DIR   = Path(__file__).parent.parent / "data" / "cases"
@@ -47,16 +47,23 @@ def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
     if verbose:
         print(f"Planner produced {len(stages)} stages")
 
-    # 3. Build readviews
+    # 3. Save planner output before readviews are added
+    write_plan({"subject_id": subject_id, "hadm_id": hadm_id, "stages": stages}, OUT_DIR)
+
+    # 4. Build readviews
     enriched_stages = build_readviews(record, stages)
 
-    # 4. Load prior admissions (for interactive mode history tools)
+    # Strip planner-internal fields not needed at runtime
+    for stage in enriched_stages:
+        stage.pop("decision_required", None)
+
+    # 5. Load prior admissions (for interactive mode history tools)
     current_admittime = record.admission_meta.get("event_time", "")
     prior_admissions  = load_prior_admissions(subject_id, hadm_id, current_admittime, DATA_ROOT)
     if verbose:
         print(f"Found {len(prior_admissions)} prior admission(s)")
 
-    # 5. Assemble prepared case
+    # 6. Assemble prepared case
     prepared: dict = {
         "subject_id":       subject_id,
         "hadm_id":          hadm_id,
@@ -65,7 +72,7 @@ def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
     if prior_admissions:
         prepared["prior_admissions"] = prior_admissions
 
-    # 6. Write to disk
+    # 7. Write full prepared case to disk
     out_path = write_prepared_case(prepared, OUT_DIR)
     update_manifest(prepared, OUT_DIR)
     if verbose:

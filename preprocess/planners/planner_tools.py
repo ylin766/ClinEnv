@@ -5,6 +5,7 @@ access to the admission data during its exploration phase.
 """
 
 import json
+import re
 from preprocess.loaders.ehr_loader import AdmissionRecord
 
 # ------------------------------------------------------------------ #
@@ -70,8 +71,7 @@ TOOLS = [
                 "[start, end] (inclusive). Same format as get_timeline_index. "
                 "Procedure events include their icd_code in the label. "
                 "Use this to survey a stage range without downloading full payloads. "
-                "Call get_event_detail(index) afterwards to get the complete fields "
-                "of any specific event you want to cite as GT."
+                "Use this to survey a stage range."
             ),
             "parameters": {
                 "type": "object",
@@ -80,41 +80,6 @@ TOOLS = [
                     "end":   {"type": "integer"},
                 },
                 "required": ["start", "end"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_event_detail",
-            "description": (
-                "Return the full payload for a single timeline event by index. "
-                "Use this after get_events_by_index or search_events to retrieve "
-                "complete fields (e.g. icd_code, drug name) for GT citation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer"},
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_events",
-            "description": (
-                "Case-insensitive keyword search across all timeline event fields. "
-                "Returns matching events with full payload."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string"},
-                },
-                "required": ["keyword"],
             },
         },
     },
@@ -160,8 +125,10 @@ TOOLS = [
         "function": {
             "name": "validate_gt_indices",
             "description": (
-                "Mechanically verify check 3b: for every GT item that has a numeric index, "
-                "confirms whether that index is strictly greater than the stage's end index. "
+                "Mechanically verify all GT index constraints: "
+                "(1) every stage has at least one GT item, "
+                "(2) no GT item points to a pre-admission event (pre_admission=true), "
+                "(3) every GT item with a numeric index has index strictly greater than the stage's end index. "
                 "Call this during Phase D self-check with the full proposed stages array. "
                 "Returns an authoritative PASS/FAIL per item — do not rely on mental arithmetic."
             ),
@@ -205,9 +172,13 @@ def _validate_gt_novelty(record: "AdmissionRecord", stages: list) -> dict:
         for gt in stage.get("gt", []):
             if not isinstance(gt, dict):
                 continue  # string GT items — skip novelty check
-            gt_type = gt.get("type", "")
+            gt_type   = gt.get("type", "")
+            gt_action = gt.get("action", "start")
             if gt_type not in ("medication", "procedure"):
                 continue  # plan and diagnosis have no index to check here
+            # For medication, only 'start' actions are novel — stop/change are expected to be visible
+            if gt_type == "medication" and gt_action != "start":
+                continue
 
             gt_idx = gt.get("index")
             if gt_idx is None:
@@ -226,7 +197,11 @@ def _validate_gt_novelty(record: "AdmissionRecord", stages: list) -> dict:
                 # Match by drug name (pharmacy table) or ICD code (procedure table)
                 ev_drug = (ev.get("medication") or ev.get("drug") or "").strip().lower()
                 ev_icd  = (ev.get("icd_code") or "").strip()
-                if (drug_name and drug_name in ev_drug) or (icd_code and icd_code == ev_icd):
+                # Use word-boundary match to avoid false hits like "ns" matching "insulin"
+                drug_match = bool(
+                    drug_name and re.search(r"\b" + re.escape(drug_name) + r"\b", ev_drug)
+                )
+                if drug_match or (icd_code and icd_code == ev_icd):
                     already_seen = True
                     first_seen_at = ev_idx
                     break
@@ -264,17 +239,120 @@ def _validate_gt_indices(record: "AdmissionRecord", stages: list) -> dict:
     total_events = len(record.timeline)
     last_event_idx = total_events - 1
 
-    # Check 1: every indexed GT item has index > stage end
-    for stage in stages:
+    # Build a set of pre-admission indices for fast lookup
+    pre_admission_indices = {
+        ev["index"] for ev in record.timeline if ev.get("pre_admission")
+    }
+
+    # Check -1: every stage must have a valid range (start <= end)
+    for stage_i, stage in enumerate(stages):
         label = stage.get("label", "")
-        start, end = stage.get("index_range", [0, 0])
+        index_range = stage.get("index_range", [0, 0])
+        if not (isinstance(index_range, list) and len(index_range) == 2):
+            violations.append({
+                "stage":  label,
+                "check":  "index_range is malformed",
+                "result": "FAIL",
+                "fix":    f"Stage '{label}' has a malformed index_range. Must be [start, end] with start <= end.",
+            })
+            continue
+        start, end = index_range
+        if start > end:
+            violations.append({
+                "stage":  label,
+                "range":  [start, end],
+                "check":  f"invalid range: start {start} > end {end}",
+                "result": "FAIL",
+                "fix": (
+                    f"Stage '{label}' has start ({start}) > end ({end}). "
+                    f"A stage range must have start <= end. "
+                    f"If you want this stage's GT to be the first event the model does not see, "
+                    f"set this stage's range so that end = GT_index - 1. "
+                    f"If that would make start > end, merge this stage with the preceding stage."
+                ),
+            })
+
+    # Check 0: every stage must have at least one GT item
+    for stage_i, stage in enumerate(stages):
+        label = stage.get("label", "")
+        gt = stage.get("gt", [])
+        if not gt:
+            violations.append({
+                "stage":  label,
+                "check":  "gt list is empty",
+                "result": "FAIL",
+                "fix": (
+                    f"Stage '{label}' has no GT items. Every stage must have at least one GT. "
+                    f"Find a significant attending decision after this stage ends: a procedure, "
+                    f"significant medication start (anticoagulant, antibiotic, vasopressor, insulin, "
+                    f"disease-specific agent), or a plan-type GT from the BHC describing a key decision."
+                ),
+            })
+
+    # Check 1: every indexed GT item has index > stage end AND is not pre-admission
+    for stage_i, stage in enumerate(stages):
+        label = stage.get("label", "")
+        index_range = stage.get("index_range", [0, 0])
+        if not (isinstance(index_range, list) and len(index_range) == 2):
+            continue  # already caught by Check -1
+        start, end = index_range
+        try:
+            start, end = int(start), int(end)
+        except (TypeError, ValueError):
+            continue
         for gt in stage.get("gt", []):
             if not isinstance(gt, dict):
                 continue  # string GT items have no index to check
+            gt_type   = gt.get("type", "")
+            gt_action = gt.get("action", "start")
             idx = gt.get("index")
-            if idx is None:
-                continue  # plan / diagnosis — no index to check
+            # Coerce string indices to int (model sometimes outputs "78" instead of 78)
+            if idx is not None:
+                try:
+                    idx = int(idx)
+                    gt["index"] = idx  # normalise in-place
+                except (TypeError, ValueError):
+                    idx = None
             display = gt.get("display") or gt.get("drug") or gt.get("span") or str(gt)
+
+            # procedure and medication(start) MUST have a non-null integer index
+            # medication stop/increase_dose/decrease_dose do NOT require an index
+            needs_index = gt_type == "procedure" or (gt_type == "medication" and gt_action == "start")
+            if idx is None:
+                if needs_index:
+                    violations.append({
+                        "stage":   label,
+                        "gt_item": display,
+                        "check":   f"{gt_type} GT has no index",
+                        "result":  "FAIL",
+                        "fix": (
+                            f"GT item {display!r} has type='{gt_type}' action='{gt_action}' but no index. "
+                            f"'start' medication GT and procedure GT must reference a specific timeline event by index. "
+                            f"If this decision has no timeline event, change its type to 'plan' and "
+                            f"set section='Brief Hospital Course' with a span capturing only the decision action."
+                        ),
+                    })
+                continue  # plan / diagnosis / non-start medication — no index to check
+
+            # Pre-admission check (takes priority)
+            if idx in pre_admission_indices:
+                violations.append({
+                    "stage":    label,
+                    "range":    [start, end],
+                    "gt_index": idx,
+                    "gt_item":  display,
+                    "check":    f"index {idx} is a pre-admission event",
+                    "result":   "FAIL",
+                    "fix": (
+                        f"GT index {idx} ({display!r}) is a pre-admission event "
+                        f"(event_time before admission_time, flagged pre_admission=true). "
+                        f"Remove it from GT — pre-admission events cannot be new physician decisions "
+                        f"during this admission. Find a different GT: look for procedures or "
+                        f"significant medications that occur after the admission start."
+                    ),
+                })
+                continue
+
             entry = {
                 "stage":    label,
                 "range":    [start, end],
@@ -286,10 +364,22 @@ def _validate_gt_indices(record: "AdmissionRecord", stages: list) -> dict:
             if idx > end:
                 passed.append(entry)
             else:
-                entry["fix"] = (
-                    f"GT index {idx} must be strictly greater than stage end {end}. "
-                    f"Options: (a) set this stage's end to {idx - 1}, or (b) find a different GT at index > {end}."
-                )
+                if idx <= start and stage_i == 0:
+                    entry["fix"] = (
+                        f"GT index {idx} falls within Stage 1's visible window [0, {end}]. "
+                        f"The model sees all events from 0 to {end}, so this GT is already visible. "
+                        f"Set Stage 1's end to {idx - 1} so index {idx} is the first unseen event. "
+                        f"Stage 1 must start at 0 and end at {idx - 1}."
+                    )
+                elif idx <= start:
+                    entry["fix"] = (
+                        f"GT index {idx} is at or before this stage's start ({start}). "
+                        f"Reducing end below start would make an invalid range. "
+                        f"Move this GT item to the previous stage's gt list (which ends at {start - 1}, before this index). "
+                        f"The previous stage already sees events up to {start - 1}, so index {idx} is correctly outside its window."
+                    )
+                else:
+                    entry["fix"] = f"Stage ends at {end} but GT index is {idx}. Set this stage's end to {idx - 1}."
                 violations.append(entry)
 
     # Check 2: final stage must end at total_events-1
@@ -335,10 +425,6 @@ def dispatch(record: AdmissionRecord, name: str, args: dict):
         return record.get_timeline_index()
     if name == "get_events_by_index":
         return record.get_events_by_index(args["start"], args["end"])
-    if name == "get_event_detail":
-        return record.get_event_detail(args["index"])
-    if name == "search_events":
-        return record.search_events(args["keyword"])
     if name == "get_diagnoses":
         return record.get_diagnoses()
     if name == "validate_gt_indices":

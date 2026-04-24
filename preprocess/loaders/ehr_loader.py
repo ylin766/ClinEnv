@@ -103,12 +103,15 @@ class AdmissionRecord:
             else:
                 label = ""
 
-            rows.append({
+            row = {
                 "index":        ev["index"],
                 "event_time":   ev.get("event_time"),
                 "source_table": table,
                 "label":        label,
-            })
+            }
+            if ev.get("pre_admission"):
+                row["pre_admission"] = True
+            rows.append(row)
 
         return rows
 
@@ -257,5 +260,13 @@ def load_admission(subject_id: str, hadm_id: str, data_root: str) -> AdmissionRe
             event = {"index": timeline_index, **raw}
             record.timeline.append(event)
             timeline_index += 1
+
+    # Tag pre-admission events (event_time before admission_time)
+    admission_time = record.admission_meta.get("event_time")
+    if admission_time:
+        for ev in record.timeline:
+            et = ev.get("event_time")
+            if et and str(et) < str(admission_time):
+                ev["pre_admission"] = True
 
     return record

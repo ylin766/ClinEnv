@@ -3,7 +3,7 @@
 Usage:
     python -m env.main --subject-id 10196757 --hadm-id 24725711
     python -m env.main --manifest data/cases/manifest.jsonl --index 0
-    python -m env.main --manifest data/cases/manifest.jsonl --index 0 --model gpt-4o-mini
+    python -m env.main --manifest data/cases/manifest.jsonl --index 0 --model gpt-5.4-mini-2026-03-17
 """
 
 import argparse
@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--mode",   default="direct",   choices=["direct", "interactive"],
                         help="Environment mode (default: direct)")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--hint-counts", action="store_true", help="Enable submission count hints")
     args = parser.parse_args()
 
     verbose = not args.quiet
@@ -49,32 +50,25 @@ def main() -> int:
     if verbose:
         print(f"Loaded case: subject={case['subject_id']} hadm={case['hadm_id']} stages={len(case['stages'])}")
 
-    episode_log = run_episode(case, model=args.model, mode=args.mode, verbose=verbose)
+    episode_log = run_episode(case, model=args.model, mode=args.mode, verbose=verbose, hint_counts=args.hint_counts)
     scored      = score_episode(episode_log)
 
-    sid  = case["subject_id"]
-    hid  = case["hadm_id"]
-    mode = args.mode
+    sid   = case["subject_id"]
+    hid   = case["hadm_id"]
+    mode  = args.mode
+    model = scored["model"]
 
-    dialogue_path = _DATA_DIR / "dialogue" / sid / f"{hid}_{mode}.json"
-    output_path   = _DATA_DIR / "output"   / sid / f"{hid}_{mode}.json"
-    dialogue_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Sanitize model name for use in filename (replace / and : with -)
+    model_slug = model.replace("/", "-").replace(":", "-")
 
-    dialogue = {
-        "subject_id": scored["subject_id"],
-        "hadm_id":    scored["hadm_id"],
-        "model":      scored["model"],
-        "mode":       mode,
-        "stages": [
-            {"label": s["label"], "index_range": s["index_range"], "messages": s.get("messages", [])}
-            for s in scored["stages"]
-        ],
-    }
+    target_dir = _DATA_DIR / "cases" / sid / model_slug
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = target_dir / f"{hid}_output.json"
     output = {
         "subject_id":    scored["subject_id"],
         "hadm_id":       scored["hadm_id"],
-        "model":         scored["model"],
+        "model":         model,
         "mode":          mode,
         "overall_score": scored["overall_score"],
         "overall_hits":  scored["overall_hits"],
@@ -84,21 +78,34 @@ def main() -> int:
                 "label":       s["label"],
                 "index_range": s["index_range"],
                 "gt":          s["gt"],
-                "submissions":        s.get("submissions", []),
-                "score":              s.get("score", {}),
+                "submissions": s.get("submissions", []),
+                "score":       s.get("score", {}),
             }
             for s in scored["stages"]
         ],
     }
-
-    dialogue_path.write_text(json.dumps(dialogue, indent=2, ensure_ascii=False), encoding="utf-8")
     output_path.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n{'='*60}")
     print(f"Episode complete.")
     print(f"Overall score: {scored['overall_hits']}/{scored['overall_total']} (F1={scored['overall_score']})")
-    print(f"Dialogue: {dialogue_path}")
     print(f"Output:   {output_path}")
+
+    # Dialogue only written for interactive mode
+    if mode == "interactive":
+        dialogue_path = target_dir / f"{hid}_dialogue.json"
+        dialogue = {
+            "subject_id": scored["subject_id"],
+            "hadm_id":    scored["hadm_id"],
+            "model":      model,
+            "mode":       mode,
+            "stages": [
+                {"label": s["label"], "index_range": s["index_range"], "messages": s.get("messages", [])}
+                for s in scored["stages"]
+            ],
+        }
+        dialogue_path.write_text(json.dumps(dialogue, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Dialogue: {dialogue_path}")
 
     return 0
 

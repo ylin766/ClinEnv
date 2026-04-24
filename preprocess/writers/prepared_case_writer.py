@@ -1,29 +1,53 @@
 """Prepared case writer.
-Serializes a validated prepared case to disk and maintains a manifest index.
+Serializes a validated prepared case and planner plan to disk; maintains a manifest index.
+
+File layout per case:
+    data/cases/<subject_id>/<hadm_id>/case.json   — full prepared case (plan + readviews)
+    data/cases/<subject_id>/<hadm_id>/plan.json   — planner output only (no readviews)
 """
 
 import json
-import os
 from pathlib import Path
 
 from preprocess.schemas.prepared_case_schema import validate_prepared_case
 
 _DEFAULT_OUT_DIR = Path(__file__).parent.parent.parent / "data" / "cases"
 
+# Fields that belong to the planner plan (exclude readview-added fields)
+_PLAN_STAGE_FIELDS = {"label", "index_range", "trigger", "available_agents", "gt"}
+
+
+def write_plan(planner_output: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path:
+    """
+    Write planner output (stages without readviews) to <hadm_id>_plan.json.
+    Called before build_readviews so the file always reflects pure planner decisions.
+    """
+    subject_id = planner_output["subject_id"]
+    hadm_id    = planner_output["hadm_id"]
+
+    case_dir = out_dir / subject_id / hadm_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "subject_id": subject_id,
+        "hadm_id":    hadm_id,
+        "stages": [
+            {k: v for k, v in stage.items() if k in _PLAN_STAGE_FIELDS}
+            for stage in planner_output.get("stages", [])
+        ],
+    }
+
+    plan_path = case_dir / "plan.json"
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return plan_path
+
 
 def write_prepared_case(payload: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path:
     """
-    Validate and write a prepared case to disk.
-
-    File layout:
-        data/cases/<subject_id>/<hadm_id>.json
-
-    Args:
-        payload:  validated prepared case dict (subject_id, hadm_id, stages)
-        out_dir:  root output directory (default: data/cases/)
-
-    Returns:
-        Path to the written file.
+    Validate and write the full prepared case (plan + readviews) to <hadm_id>.json.
 
     Raises:
         ValueError if schema validation fails.
@@ -35,10 +59,10 @@ def write_prepared_case(payload: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path
     subject_id = payload["subject_id"]
     hadm_id    = payload["hadm_id"]
 
-    case_dir = out_dir / subject_id
+    case_dir = out_dir / subject_id / hadm_id
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    out_path = case_dir / f"{hadm_id}.json"
+    out_path = case_dir / "case.json"
     out_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
@@ -49,17 +73,16 @@ def write_prepared_case(payload: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path
 def update_manifest(payload: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> None:
     """
     Append or update an entry in data/cases/manifest.jsonl.
-    Each line: {subject_id, hadm_id, path, n_stages}
+    Each line: {subject_id, hadm_id, n_stages, path}
     """
     manifest_path = out_dir / "manifest.jsonl"
     entry = {
         "subject_id": payload["subject_id"],
         "hadm_id":    payload["hadm_id"],
         "n_stages":   len(payload["stages"]),
-        "path":       str(out_dir / payload["subject_id"] / f"{payload['hadm_id']}.json"),
+        "path":       str(out_dir / payload["subject_id"] / payload["hadm_id"] / "case.json"),
     }
 
-    # read existing entries, replace if same hadm_id exists
     entries = {}
     if manifest_path.exists():
         for line in manifest_path.read_text(encoding="utf-8").splitlines():

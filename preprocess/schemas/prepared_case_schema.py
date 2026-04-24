@@ -1,11 +1,10 @@
 """Prepared case schema definition and validation.
 
-A prepared case is the serialized output of the preprocessing pipeline.
-It contains the planner's decision stages enriched with per-agent readviews,
-ready to be loaded by the runtime environment.
+Validates planner output only — readviews are built by readview_builder.py
+and are always structurally correct, so they are not checked here.
 
-Schema
-------
+Schema (planner-produced fields)
+---------------------------------
 {
   "subject_id": str,
   "hadm_id":    str,
@@ -18,22 +17,18 @@ Schema
       "gt": [
         {"type": "diagnosis",  "icd_code": str, "icd_version": int, "display": str}
         {"type": "procedure",  "index": int, "icd_code": str, "icd_version": int, "display": str}
-        {"type": "medication", "index": int, "drug": str}
+        {"type": "medication", "action": "start"|"stop"|"increase_dose"|"decrease_dose",
+                               "index": int (required for action="start" only), "drug": str}
         {"type": "plan",       "section": str, "span": str}
-      ],
-      "readviews": {
-        "patient": {"chief_complaint": str|None, "hpi": str|None, ...},
-        "nurse":   {"events": [...]},
-        "lab":     {"events": [...]}
-      }
+      ]
     }
   ]
 }
 """
 
-_VALID_TRIGGER_AGENTS = {"patient", "nurse"}
-_VALID_GT_TYPES       = {"procedure", "diagnosis", "medication", "plan"}
-_VALID_READVIEW_AGENTS = {"patient", "nurse", "lab"}
+_VALID_TRIGGER_AGENTS   = {"patient", "nurse"}
+_VALID_GT_TYPES         = {"procedure", "diagnosis", "medication", "plan"}
+_VALID_MED_ACTIONS      = {"start", "stop", "increase_dose", "decrease_dose"}
 
 
 def _err(path: str, msg: str) -> str:
@@ -42,8 +37,7 @@ def _err(path: str, msg: str) -> str:
 
 def validate_prepared_case(payload) -> list[str]:
     """
-    Validate a prepared case dict against the schema.
-
+    Validate planner-produced fields of a prepared case.
     Returns a list of error strings. Empty list means valid.
     """
     errors = []
@@ -67,7 +61,7 @@ def validate_prepared_case(payload) -> list[str]:
     for i, stage in enumerate(stages):
         p = f"stages[{i}]"
 
-        for key in ("label", "index_range", "trigger", "gt", "readviews"):
+        for key in ("label", "index_range", "trigger", "gt"):
             if key not in stage:
                 errors.append(_err(p, f"missing key '{key}'"))
 
@@ -93,6 +87,7 @@ def validate_prepared_case(payload) -> list[str]:
         if not isinstance(gt, list) or len(gt) == 0:
             errors.append(_err(p + ".gt", "must be a non-empty list"))
         else:
+            stage_end = ir[1] if isinstance(ir, list) and len(ir) == 2 else 0
             for j, item in enumerate(gt):
                 gp = f"{p}.gt[{j}]"
                 gt_type = item.get("type")
@@ -102,24 +97,30 @@ def validate_prepared_case(payload) -> list[str]:
                     for k in ("icd_code", "icd_version", "display"):
                         if k not in item:
                             errors.append(_err(gp, f"missing '{k}'"))
-                    if gt_type == "procedure" and "index" not in item:
-                        errors.append(_err(gp, "missing 'index'"))
+                    if gt_type == "procedure":
+                        if "index" not in item:
+                            errors.append(_err(gp, "missing 'index'"))
+                        elif item["index"] <= stage_end:
+                            errors.append(_err(gp,
+                                f"GT index {item['index']} must be > stage end {stage_end} "
+                                f"(GT must not be visible within this stage's event window)"))
                 elif gt_type == "medication":
-                    for k in ("index", "drug"):
-                        if k not in item:
-                            errors.append(_err(gp, f"missing '{k}'"))
+                    action = item.get("action", "start")
+                    if action not in _VALID_MED_ACTIONS:
+                        errors.append(_err(gp, f"action must be one of {_VALID_MED_ACTIONS}, got {action!r}"))
+                    if "drug" not in item:
+                        errors.append(_err(gp, "missing 'drug'"))
+                    # 'start' requires a timeline index; stop/increase/decrease do not
+                    if action == "start":
+                        if "index" not in item:
+                            errors.append(_err(gp, "missing 'index' (required for action='start')"))
+                        elif item["index"] <= stage_end:
+                            errors.append(_err(gp,
+                                f"GT index {item['index']} must be > stage end {stage_end} "
+                                f"(GT must not be visible within this stage's event window)"))
                 elif gt_type == "plan":
                     for k in ("section", "span"):
                         if k not in item:
                             errors.append(_err(gp, f"missing '{k}'"))
-
-        # readviews
-        rv = stage.get("readviews", {})
-        if not isinstance(rv, dict):
-            errors.append(_err(p + ".readviews", "must be a dict"))
-        else:
-            for agent in _VALID_READVIEW_AGENTS:
-                if agent not in rv:
-                    errors.append(_err(p + ".readviews", f"missing agent '{agent}'"))
 
     return errors

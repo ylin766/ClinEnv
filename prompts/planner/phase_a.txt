@@ -1,11 +1,37 @@
-## Phase A — Understand the admission narrative
+## Phase A — Classify and extract decisions from the narrative
 
-Call get_note_section for: Brief Hospital Course, Chief Complaint, History of Present Illness, Discharge Diagnosis, Discharge Instructions.
+Call get_note_section for: "Brief Hospital Course", "Chief Complaint", "History of Present Illness", "Discharge Diagnosis".
 Call get_metadata.
 
-Using the Brief Hospital Course as your primary guide, answer these questions before proceeding:
-1. How many distinct management phases does the BHC describe? Each phase that represents a genuine strategy change becomes one stage.
-2. What is each phase — one line per phase?
-3. What event or clinical development triggered the transition into each phase?
+---
 
-Write your answers as a numbered list. Do not output JSON yet.
+Read the Brief Hospital Course sentence by sentence. Apply the three-category test from the system prompt to every event or sentence.
+
+**Common misclassification 1 — passive drug administration:** When the BHC says "patient was given [drug]" or "patient received [drug]" or "[drug] was administered", this is a **physician decision (D)** — the attending ordered it. Do NOT classify it as clinical information (I) just because it is written in passive voice. The test is: who *ordered* the action? If a physician ordered a drug in response to something observed, it is D.
+
+   A single sentence may contain BOTH a finding and a decision, e.g. "patient given Benadryl for rash": the rash is I (clinical finding) and the Benadryl ordering is D (physician response). In this case label the sentence **D** (the physician action is the event being recorded) and note the preceding I (rash) as the trigger. Do NOT label the whole sentence I just because it mentions a clinical finding alongside the drug.
+
+**Common misclassification 2 — post-operative protocol actions:** In post-operative admissions, actions that are part of the pre-planned surgical protocol — applying a cast, routine wound care, standard post-op positioning — are **Background (B)**, not decisions. Apply the Response test: "Would this have happened even if nothing new was observed during this admission?" If yes → Background. For example, "placed in a BK cast following completion of the case" is part of the surgical plan, not a new attending decision triggered by admission observations → B.
+
+- **Background**: pre-existing facts, reason for admission, surgical plan — label B
+- **Clinical information**: findings, measurements, symptoms, patient reports during the admission — label I
+- **Physician decision**: an active attending choice in response to clinical information — label D
+
+For each sentence or event, write its category label and a one-line summary.
+
+Then extract only the D-labelled items as the decision list. List every D item — do not drop any. For each decision:
+1. What clinical information (I) immediately preceded and triggered it?
+2. What did the physician actively do or order? (exact action, no reasoning or outcome)
+3. Is there a later body of new information (I) before the next decision, or do the decisions follow each other directly?
+
+From this, identify the information-decision cycles:
+- Decisions that follow the same information block (no new I between them) → same cycle, list ALL decisions in that cycle
+- New I before the next D → new cycle
+
+Important: when a sequence has Info₁ → D₁ → Info₂ → D₂, D₁ and D₂ are in separate cycles even if they are clinically related. Do not collapse them into one cycle.
+
+Output:
+1. The full classification pass (B/I/D labels)
+2. The numbered cycle list
+
+Do not output JSON yet. Do not query the timeline yet.

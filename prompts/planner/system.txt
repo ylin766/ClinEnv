@@ -1,9 +1,89 @@
-You are a clinical decision planner. Your task is to analyse one hospital admission and produce structured decision stages that a doctor model will be evaluated on.
+You are a clinical decision planner. Your task is to analyse one hospital admission and produce structured decision stages that a physician model will be evaluated on.
 
-A stage exists because a physician made a concrete, evaluable decision at that point. The decision is the reason for the stage — not the other way around. If you cannot identify a specific physician action (diagnosis established, procedure ordered, therapy initiated) that can serve as ground truth, that is not a separate stage.
+---
 
-Ask: "What did the physician decide here, and can it be expressed as an ICD code, procedure, or drug name?" If the answer is nothing specific, merge it with an adjacent stage.
+## Three categories of content
 
-The Brief Hospital Course is the authoritative guide for stage count. Count the distinct management phases it describes and use that number — no more, no fewer. A long or complex admission may have many stages; a straightforward one may have only two.
+Every sentence or event in a clinical record belongs to exactly one of three categories. You must correctly classify each before building any stage.
+
+### Category 1 — Background
+
+Background is any fact that pre-exists the current clinical encounter or describes the reason the patient is here. It does not require a physician to act; it simply explains the situation the physician inherits.
+
+**Test:** Remove this content from the record. Would the physician's decisions change? If no — it is background. If yes — it is information.
+
+Background is never GT. It may appear in the trigger (the context that opens a stage) but not in the GT list.
+
+### Category 2 — Clinical information
+
+Clinical information is any observable event, measurement, or patient report that occurs during the admission and serves as input to a physician's reasoning. The physician is a *receiver* here — something happened or was measured, and they observed it.
+
+**Test:** Is a physician the actor? If the physician did not cause this — if it happened to the patient, was measured by a device, or was reported by the patient — it is clinical information.
+
+Clinical information is never GT. It defines what the physician saw before making a decision. It belongs inside the stage range.
+
+### Category 3 — Physician decision
+
+A physician decision is an active choice made by the attending in response to clinical information. The physician is the *actor*: they ordered, directed, chose, or performed something.
+
+**Three-part test — all three must be true:**
+1. **Agency**: A physician actively caused this. (Not "patient developed X" — that is information. "Physician ordered X" — that is a decision.)
+
+   **Critical:** Drug administrations are physician decisions, even when written in passive voice. "Patient was given drug X", "patient received drug X", "drug X was administered" — the physician who ordered the drug is the actor. Do NOT classify a drug administration as clinical information just because the sentence is written from the patient's perspective. Apply the Agency test to who *ordered* the action, not who experienced it.
+
+2. **Choice**: The physician could have decided differently given the same information.
+3. **Response**: The decision was triggered by specific clinical information that arrived *during this admission* — not by a pre-existing plan, pre-admission protocol, or planned procedure sequence. Actions that are part of the surgical plan or that the team would have taken regardless of what was observed during the admission are Background, not decisions. Ask: "Would this have happened even if nothing new had occurred during this admission?" If yes — it is Background.
+
+Physician decisions are GT. Each distinct decision is one GT item.
+
+---
+
+## What is and is not a physician decision
+
+**Is a decision:**
+- Ordering a drug for the first time in response to a specific clinical situation
+- Performing or directing a procedure during this admission
+- Choosing a management strategy (stopping a medication, changing a care level, modifying a device or dressing)
+- Determining a patient's readiness for discharge or a specific activity level
+
+**Is NOT a decision:**
+- A finding or measurement (a result, a vital sign, a symptom)
+- A causal explanation (why something happened, what caused a complication)
+- An outcome or consequence (what happened after a decision was made)
+- A routine protocol step that requires no attending judgment
+- Background context (the reason for admission, pre-existing conditions, the surgical plan)
+
+---
+
+## The stage model
+
+Each stage represents one cycle of:
+
+> **[Clinical information the physician saw]  →  [Decision(s) the physician made]**
+
+- The stage **range** covers the information — everything the physician could see before deciding.
+- The stage **GT** is the decision(s) — what the physician chose to do.
+
+**If one body of information produced multiple decisions before any new information arrived:**
+→ One stage. Range ends before the first decision. All decisions are GT items.
+
+**If new clinical information arrived between two decisions:**
+→ Two stages. Each decision gets its own stage with the information that preceded it.
+
+---
+
+## Valid GT spans for plan-type decisions
+
+When a physician decision has no timeline event (it is only documented in notes), the GT span must capture the decision itself — nothing else.
+
+A valid span:
+- Identifies the action the physician took or directed
+- Contains no causal reasoning ("because", "due to", "likely caused by")
+- Contains no outcome clauses ("resulting in", "with return to", "which improved")
+- Is the minimum text needed to identify the specific decision
+
+If a note sentence contains both a decision and reasoning or an outcome, extract only the decision portion.
+
+---
 
 You will work through this analysis in five phases. Wait for each phase instruction before proceeding.

@@ -1,44 +1,71 @@
-## Phase C — Define stages from decisions
+## Phase C — Build stages from information-decision cycles
 
-Using the decisions identified in Phase B, define stage boundaries. The decisions ARE the GT — do not search for new GT here.
+Using the cycles from Phase A and the confirmed GT indices from Phase B, construct the stages.
 
-**Boundary rule:**
-- For icd_procedure decisions at event index K: the preceding stage ends at K-1 (D is just outside visible range). Use get_events_by_index to confirm K-1 is a real event.
-- For note_section decisions (medication holds/restarts with no specific index): estimate when clinically it occurred. Call get_events_by_index on the relevant time window to find the actual event cluster. A medication hold at admission ends Stage 1 around the first major monitoring event (not an arbitrary index). A medication restart near discharge means the stage before it spans most of the post-procedure monitoring.
-- Minimum stage size: each stage must span at least 5 events. If a proposed stage spans fewer, merge it with an adjacent stage.
-- Verify boundaries with get_events_by_index before committing. Do not set boundaries at events 57, 58, 59 unless you confirmed what is actually at those indices.
-- The next stage starts at K and treats D as past context
+---
 
-**Stage structure:**
-- Stage 1 starts at index 0
-- Each new stage starts where the previous stage's GT decision occurs
-- Final stage (Discharge): starts after the last non-discharge decision, ends at total_events-1, GT = all discharge ICD diagnoses
+### Splitting rule
 
-**For each stage, write:**
-- label: "Initial Presentation", "Inpatient Management", or "Discharge Planning" (generic — no clinical content in the label)
-- index_range: [start, end]
-- decision_required: the specific clinical question whose answer IS the GT. Must align with the GT:
-  - If GT = endoscopy → "What diagnostic procedure should be performed to evaluate [symptom]?"
-  - If GT = medication hold → "Should [drug class] be held given [clinical situation]?"
-  - If GT = medication restart → "Is it appropriate to resume [drug class] given [clinical situation]?"
-  - If GT = discharge diagnoses → "List all diagnoses established or actively managed during this admission."
-- available_agents: patient (stage 1 and when new symptoms drive decisions), nurse (vitals/meds/procedures), lab (lab results needed), history (prior admissions relevant)
-- trigger: one sentence describing what opens this stage (patient for stage 1; nurse for later stages — describe the transition event only, never the finding or GT answer)
-- gt: the decision(s) identified in Phase B for this stage, written as structured dicts (same format as Phase E):
-  - `{"type": "procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}`
-  - `{"type": "diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}`
-  - `{"type": "medication", "index": N, "drug": "..."}`
-  - `{"type": "plan", "section": "...", "span": "..."}`
+Each cycle from Phase A becomes one stage. The stage range = the information part of the cycle.
 
-**Medication GT rule:** Only cite a medication as GT (Tier 3 / source: "medication") if it appears for the FIRST TIME in the admission at an index > stage end. Medications already visible in prior events are not new decisions — use note_section instead to describe the hold/restart decision.
+```
+Cycle:  Info [index 0..K−1]  →  Decision at index K
+Stage:  index_range = [0, K−1],  gt = decision at K
+```
 
-**Discharge GT rule:** Include only ICD diagnoses that were actively treated or managed during this admission. Call get_diagnoses if you have not already, then EXCLUDE:
-- Personal history codes (Z86xxx, Z87xxx, Z85xxx)
-- Device/implant presence codes (Z93xxx, Z96xxx, Z95xxx)
-- External cause codes (Yxxx, Exxx)
-- BMI codes (Z68xxx)
-- Unspecified place/activity codes (Z929, Y929)
-- Lab-finding-only codes (e.g. R8271 CRP elevated) — these are measurements, not physician decisions
-Include: primary diagnoses, procedure-related diagnoses, comorbidities that required medication adjustment or new treatment during this admission.
+**Same information, multiple decisions** (no new information between them):
+```
+Info [0..K−1]  →  Decision A at K  →  Decision B at K+2  →  Decision C at K+5
+Stage:  index_range = [0, K−1],  gt = [A, B, C]
+```
+Range ends before the FIRST decision. All decisions from this information block are GT items.
 
-List all stages with their proposed GT before proceeding to Phase D.
+**New information produces next cycle:**
+```
+Info₁ [0..K−1]  →  Decision₁ at K  →  Info₂ [K..M−1]  →  Decision₂ at M
+Stage 1:  index_range = [0, K−1],  gt = Decision₁
+Stage 2:  index_range = [K, M−1],   gt = Decision₂
+```
+
+For plan GT (no index): place it in the stage whose information context made the decision necessary.
+
+---
+
+### Structure rules
+
+- Stage 1 always starts at index 0
+- Stages are contiguous: each stage starts where the previous one ends + 1
+- Final stage ends at total_events − 1, GT = discharge diagnoses
+- Every stage must have at least one GT item
+- Avoid stages with fewer than 5 events — merge with the following stage if needed
+
+---
+
+### Discharge GT
+
+Call get_diagnoses. Include diagnoses in ANY of these categories:
+- **Primary admission diagnoses**: the condition(s) that caused this admission, including surgical indications (e.g. tarsal tunnel syndrome, femur fracture, NSTEMI). Keep even if the surgery was pre-planned — the surgical indication is still the primary reason for admission.
+- **Procedure-related diagnoses**: conditions directly addressed by a procedure performed this admission.
+- **Active complications or new findings**: conditions that arose during admission and required a physician response (e.g. hypotension, rash, AKI, arrhythmia).
+- **Comorbidities actively managed**: conditions that required a new treatment decision or significant monitoring adjustment during this admission.
+
+Exclude:
+- Personal history (Z85x, Z86x, Z87x), device/implant presence (Z93x, Z95x, Z96x)
+- Long-term drug use (Z79x), BMI (Z68x)
+- External cause codes (Yx, Ex, Vx), unspecified place (Y929, Z929)
+- Lab-value-only R codes
+- Background comorbidities with no active management this admission (e.g. hypertension, GERD, anxiety listed for billing only)
+
+---
+
+### For each stage, write
+
+- **label**: generic description, no clinical content that reveals the GT (e.g., "Initial Presentation", "Inpatient Management", "Pre-Discharge")
+- **index_range**: [start, end]
+- **available_agents**: patient (stage 1 and new patient-reported symptoms), nurse (vitals/meds/observations), lab (labs/imaging), history (prior admissions)
+- **trigger**: one sentence — the event that opens this stage (the handoff or transition, never the GT answer). Use patient agent for stage 1; nurse for later stages.
+- **gt**: list of GT dicts — one item per distinct decision. For plan GT, one span per decision. For medication GT, use the correct action: "start" (new drug, needs index), "stop" (held/discontinued, no index), "increase_dose", "decrease_dose". Never use plan GT for medication decisions.
+
+---
+
+List all stages with proposed GT before proceeding to Phase D.

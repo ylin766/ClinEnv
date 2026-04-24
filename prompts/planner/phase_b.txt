@@ -1,25 +1,69 @@
-## Phase B — Identify key physician decisions
+## Phase B — Locate decisions in the timeline
 
-Call get_timeline_index() and get_note_section("Brief Hospital Course") to understand the full admission.
+Call get_timeline_index() to get the full event sequence.
+Call get_diagnoses() for discharge GT.
 
-Your task: find every key physician decision made during this admission, in chronological order. These decisions will become the GT for each stage — so find them BEFORE defining any stage boundaries.
+**Critical constraint: only work from the D-labelled items identified in Phase A.** Do NOT rediscover or add items that were classified as Background (B) or Clinical Information (I) in Phase A. If a physician action was classified B in Phase A (e.g., applying a cast as part of a pre-planned surgical protocol, routine post-op care that would have happened regardless), it MUST NOT appear as GT here, even if it looks like a physician action.
 
-**What counts as a key decision:**
-- A new procedure or intervention (use icd_procedure GT — find the exact event index)
-- A medication newly held or stopped due to a clinical event (use note_section GT from BHC)
-- A medication newly started or restarted after being held (use note_section GT from BHC)
-- Discharge diagnosis summary (use icd_diagnosis GT — call get_diagnoses)
+For each decision identified in Phase A (D-labelled items only), find its position in the timeline.
 
-**What is NOT a key decision:**
-- Daily pharmacy re-orders of the same drug (administrative, not clinical)
-- Routine maintenance medications continued unchanged
-- Lab values, vitals, imaging findings (inputs to decisions, not decisions)
+---
 
-**For each decision, record:**
-1. Clinical description (what the physician decided)
-2. Event index (for icd_procedure: the exact index; for note_section: N/A)
-3. GT citation (icd_procedure with index, OR note_section with exact BHC text, OR icd_diagnosis code)
+### Locating medication decisions
 
-Use get_events_by_index or search_events to locate procedure events and verify indices.
+Every medication GT must have an `action` that describes what the physician did. Medication decisions must NOT be represented as plan GT — use the medication GT type with the correct action.
 
-Output a numbered decision list before proceeding to Phase C. The last decision is always the discharge diagnoses (call get_diagnoses).
+**Action classification:**
+- `"start"` — physician orders a drug for the first time in response to a clinical finding. Requires a timeline index (first appearance of the drug). The drug must NOT already appear in the timeline before the stage's end.
+- `"stop"` — physician discontinues or holds a drug the patient is currently taking (e.g. "held anticoagulation", "stopped warfarin", "Lovenox was held"). No timeline index needed.
+- `"increase_dose"` — physician increases the dose of an existing drug. No timeline index needed.
+- `"decrease_dose"` — physician decreases the dose of an existing drug. No timeline index needed.
+
+For `"start"` actions: call get_events_by_index on the relevant range to confirm the drug's first appearance in the timeline. The GT index is the first event where this drug is ordered during this admission.
+
+**Qualifying medication decisions** — the drug must be ordered for the first time as a direct physician response to a specific clinical situation:
+- Anticoagulants (heparin, enoxaparin, warfarin, apixaban, rivaroxaban, argatroban)
+- Antibiotics for a new or specific infection
+- Vasopressors or inotropes (norepinephrine, dopamine, dobutamine)
+- Insulin initiation or major dose adjustment
+- Disease-specific agents (immunosuppressants, chemotherapy, biologics, antifungals)
+- Any drug newly ordered as a direct physician response to a specific acute clinical event, where the ordering requires attending-level judgment
+
+**Not a qualifying medication:**
+- Routine electrolytes (KCl, MgSO4, calcium, phosphate, Neutra-Phos)
+- Maintenance medications already ordered before the triggering clinical event
+- Daily pharmacy refreshes of existing orders
+- Routine maintenance fluids (only qualify when ordered as an acute hemodynamic intervention)
+
+**Pre-admission events:** Events marked `pre_admission: true` occurred before this admission. They cannot be GT.
+
+**Novelty check (start only):** If the drug already appears in the timeline before the expected decision point, it is a pharmacy refresh — not a new start decision. Check whether the BHC describes a specific decision to hold, stop, or restart the drug; if so, use action="stop" or action="start" at the correct index.
+
+### Locating procedure decisions
+
+Find the ICD procedure event index. Events marked `pre_admission: true` are excluded.
+
+**Primary code selection:** When multiple ICD procedure codes share the same event_time (same operation), select only ONE — the most therapeutically representative code. Prefer the code that names the core intervention (e.g. drug-eluting stent placement, valve replacement, nephrectomy). Drop adjunct billing codes such as approach codes, vessel count codes, or imaging guidance codes. One surgical event → one procedure GT item. Set stage end = (selected index) − 1.
+
+### Plan decisions (note-only)
+
+If a physician decision has no corresponding event in the timeline — or if the drug/procedure was already present before the triggering event (novelty check fails) — it MUST be represented as plan GT. Do NOT assign type=procedure or type=medication with a null or missing index. A procedure or medication GT without a valid timeline index is invalid.
+
+Apply the valid span rule from the system prompt:
+- The span must capture only the physician action
+- Remove any reasoning clauses ("because", "due to", "likely caused by")
+- Remove any outcome clauses ("resulting in", "with return to", "which improved", "with resolution")
+- One span per distinct decision; do not combine multiple decisions into one span
+
+### Post-operative admissions
+
+If all procedure events are marked `pre_admission: true`, the surgery is background. Seek decisions made during the admission. If no qualifying medication GT exists, identify plan GT from the BHC for each non-discharge stage.
+
+---
+
+Output the confirmed decision list with:
+- Type: medication / procedure / plan / diagnosis
+- Index (or "note only")
+- GT dict
+
+Before proceeding to Phase C.
