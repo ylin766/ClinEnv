@@ -5,7 +5,8 @@ You will be given:
 2. The physician's request (which may use clinical shorthand, full names, or synonyms)
 
 Your task: identify which labels from the available list match the physician's request, accounting for:
-- Abbreviations (PT → Prothrombin time, INR → INR(PT), BUN → Urea Nitrogen, WBC → White Blood Cells, Hgb → Hemoglobin, Hct → Hematocrit, Na → Sodium, K → Potassium, Cr → Creatinine)
+- Abbreviations (PT → Prothrombin time, INR → INR(PT), BUN → Urea Nitrogen, WBC → White Blood Cells, Hgb → Hemoglobin, Hct → Hematocrit, Na → Sodium, K → Potassium, Cr → Creatinine, Plt → Platelets)
+- Panels (CBC → Hematocrit, Hemoglobin, Platelet Count, White Blood Cells, RBC, MCV, MCH, MCHC, RDW; BMP → Sodium, Potassium, Chloride, Bicarbonate, Urea Nitrogen, Creatinine, Glucose, Calcium; LFT → Alanine Aminotransferase, Aspartate Aminotransferase, Alkaline Phosphatase, Bilirubin, Albumin, Protein; Lipid Panel → Cholesterol, LDL, HDL, Triglycerides)
 - Synonyms and alternate names
 - Partial matches (e.g. "troponin" should match "Troponin T" and "Troponin I")
 

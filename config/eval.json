@@ -1,0 +1,32 @@
+{
+  "eval_model": "gpt-5.4-mini",
+  "vllm": {
+    "enabled": false,
+    "base_url": "http://localhost:8000/v1"
+  },
+  "outcome_scorers": {
+    "medication_atc": {
+      "enabled": true,
+      "precision_threshold": 0.0
+    },
+    "procedure_icd": { "enabled": true },
+    "diagnosis_icd": { "enabled": true }
+  },
+  "process_scorers": {
+    "info_coverage": {
+      "enabled": true,
+      "speakers": ["nurse", "patient", "lab"]
+    },
+    "lab_cost": {
+      "enabled": true,
+      "fee_schedule": "data/mimic_lab_fees.csv"
+    },
+    "medication_cost": {
+      "enabled": true
+    }
+  },
+  "weights": {
+    "primary":   1.0,
+    "secondary": 0.5
+  }
+}

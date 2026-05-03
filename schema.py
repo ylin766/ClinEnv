@@ -14,17 +14,19 @@ Mode = Literal["direct", "interactive"]
 # Shared type vocabulary                                               #
 # ------------------------------------------------------------------ #
 
-DecisionType = Literal["procedure", "diagnosis", "medication", "plan"]
+DecisionType = Literal["procedure", "diagnosis", "medication"]
 
 
 # ------------------------------------------------------------------ #
 # Submission                                                           #
 # ------------------------------------------------------------------ #
 
-class Submission(TypedDict):
-    type:      DecisionType
-    value:     str   # submitted clinical text (procedure / diagnosis / drug / plan)
-    reasoning: str
+class Submission(TypedDict, total=False):
+    type:      DecisionType   # required
+    value:     str            # submitted clinical text (procedure / diagnosis / drug)
+    reasoning: str            # required
+    action:    str            # medication only: start / stop / adjust / switch
+    direction: str            # adjust only: increase / decrease (optional)
 
 
 # ------------------------------------------------------------------ #
@@ -49,13 +51,17 @@ class GTItem(TypedDict, total=False):
     # procedure / diagnosis
     icd_code:    str
     icd_version: int
-    display:     str
-    index:       int
+    procedure_title: str
+    event_index: int
+    event_range: str
     # medication
-    drug:        str
-    # plan
-    section:     str
-    span:        str
+    drug_name:   str
+    action:      str
+    direction:   str          # adjust only: increase / decrease
+    dose:        str
+    dose_unit:   str
+    route:       str
+    frequency:   str
     # metadata only
     source:      str
 
@@ -71,5 +77,5 @@ class StageResult(TypedDict):
     present in the full episode log but are not part of this interface.
     """
     label:       str
-    gt:          list[GTItem]
+    gts:         list[GTItem]
     submissions: list[Submission]

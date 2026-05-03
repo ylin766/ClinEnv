@@ -1,0 +1,9 @@
+A clinical decision is associated with multiple ICD procedure codes. Identify which one is the primary operation described in the decision. The others may be secondary billing, documentation, or ancillary codes.
+
+Decision: {decision}
+
+Procedure codes:
+{codes}
+
+Output JSON only:
+{{"primary_event_index": <integer>}}

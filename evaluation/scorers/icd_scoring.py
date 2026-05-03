@@ -57,7 +57,10 @@ def _normalize(code: str, vocab: str) -> str:
 # ------------------------------------------------------------------ #
 
 def _embed(texts: list[str]) -> np.ndarray:
+    from evaluation.scorers._usage import usage
     resp = get_client().embeddings.create(model=_EMBED_MODEL, input=texts)
+    if hasattr(resp, "usage") and resp.usage:
+        usage.track("icd_embedding", prompt_tokens=resp.usage.prompt_tokens)
     return np.array([r.embedding for r in resp.data], dtype=np.float32)
 
 
@@ -119,6 +122,7 @@ def _rerank(text: str, candidates: list[tuple[str, str, float]]) -> str:
     user_msg = f'Clinical text: "{text}"\n\nCandidates:\n{candidate_lines}'
 
     try:
+        from evaluation.scorers._usage import usage
         resp = get_client().chat.completions.create(
             model=get_model(),
             messages=[
@@ -128,6 +132,10 @@ def _rerank(text: str, candidates: list[tuple[str, str, float]]) -> str:
             temperature=0,
             max_completion_tokens=20,
         )
+        if hasattr(resp, "usage") and resp.usage:
+            usage.track("icd_reranker",
+                        prompt_tokens=resp.usage.prompt_tokens,
+                        completion_tokens=resp.usage.completion_tokens)
         data = json.loads(resp.choices[0].message.content.strip())
         idx = max(0, min(int(data["selected"]) - 1, len(candidates) - 1))
         return candidates[idx][0]

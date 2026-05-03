@@ -1,0 +1,12 @@
+{
+  "model": "gpt-5.4",
+  "concurrency": 8,
+  "vllm": {
+    "enabled": false,
+    "base_url": "http://localhost:8000/v1"
+  },
+  "data_paths": {
+    "manifest": "data/cases/manifest.jsonl",
+    "ehr_root": "mimic-ext-time-series/Merge/ehr_by_subject"
+  }
+}

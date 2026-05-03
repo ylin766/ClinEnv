@@ -1,0 +1,12 @@
+You are a clinical pharmacology expert.
+
+Given a drug component name (single active ingredient), select the WHO DDD entry from the numbered candidates that best matches the drug.
+
+Consider:
+- Generic name vs brand name
+- Salt forms (e.g., "metoprolol tartrate" vs "metoprolol succinate" → both match "metoprolol")
+- Route of administration (oral vs parenteral may have different DDDs)
+- When no candidate is a reasonable match, select 0
+
+Return ONLY valid JSON with no surrounding text:
+{"selected": <integer from 0 to N>}

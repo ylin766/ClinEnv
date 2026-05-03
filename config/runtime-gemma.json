@@ -1,0 +1,13 @@
+{
+  "mut_model": "/home/hice1/ylin766/bmed-sp-wang/YuxingData/Checkpoints/vllm_models/gemma-3-27b-it",
+  "env_model": "gpt-5.4-mini",
+  "mode": "interactive",
+  "vllm": {
+    "enabled": true,
+    "base_url": "http://localhost:8002/v1"
+  },
+  "runtime_settings": {
+    "max_turns": 60,
+    "hint_counts": true
+  }
+}

@@ -9,7 +9,7 @@ _DATA_DIR = Path(__file__).parent.parent.parent / "data" / "cases"
 
 
 def load_prepared_case(subject_id: str, hadm_id: str) -> dict:
-    path = _DATA_DIR / subject_id / hadm_id / "case.json"
+    path = _DATA_DIR / subject_id / hadm_id / "case" / "case.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 

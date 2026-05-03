@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from openai import OpenAI
+from env.llm_client import chat_complete
 
 _PROMPT = Path(__file__).parent.parent.parent / "prompts" / "env" / "lab_agent.txt"
 
@@ -71,7 +72,8 @@ def search(readview: dict, test_name: str, client: OpenAI, model: str) -> dict:
         "or {\"matches\": []} if none match."
     )
 
-    resp = client.chat.completions.create(
+    resp = chat_complete(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": system},

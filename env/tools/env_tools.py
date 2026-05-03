@@ -26,10 +26,10 @@ _SUBMIT_TOOLS = [
             "name": "submit_medication",
             "description": (
                 "Submit a medication decision. Use the appropriate action:\n"
-                "- 'start': order a drug for the first time in response to a clinical finding\n"
+                "- 'start': order a drug for the first time\n"
                 "- 'stop': discontinue a drug the patient is currently taking\n"
-                "- 'increase_dose': increase the dose of a drug the patient is currently taking\n"
-                "- 'decrease_dose': decrease the dose of a drug the patient is currently taking\n"
+                "- 'adjust': change the dose or frequency of a current drug\n"
+                "- 'switch': replace one drug with another (e.g. IV to oral, or different agent)\n"
                 "Do NOT use submit_plan for medication changes — use this tool for all drug decisions."
             ),
             "parameters": {
@@ -37,10 +37,15 @@ _SUBMIT_TOOLS = [
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["start", "stop", "increase_dose", "decrease_dose"],
+                        "enum": ["start", "stop", "adjust", "switch"],
                         "description": "The medication action being taken.",
                     },
                     "drug_name": {"type": "string", "description": "Standard drug name."},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["increase", "decrease"],
+                        "description": "For 'adjust' only: whether the dose/frequency is being increased or decreased.",
+                    },
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
                 "required": ["action", "drug_name", "reasoning"],
@@ -280,9 +285,13 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
         value = args.get("drug_name", "").strip()
         if not value:
             return {"error": "drug_name is required"}
-        return {"status": "recorded", "type": "medication",
-                "action": action, "value": value,
-                "reasoning": args.get("reasoning", "")}
+        result: dict = {"status": "recorded", "type": "medication",
+                        "action": action, "value": value,
+                        "reasoning": args.get("reasoning", "")}
+        direction = (args.get("direction") or "").strip().lower()
+        if direction in ("increase", "decrease"):
+            result["direction"] = direction
+        return result
 
     if name == "submit_diagnosis":
         value = args.get("diagnosis", "").strip()

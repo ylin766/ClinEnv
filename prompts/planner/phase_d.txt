@@ -1,73 +1,24 @@
-## Phase D — Validate
+You are a clinical decision classifier.
 
-**Step 1 — Mechanical tools (required, loop until PASS):**
+Classify the following physician decision.
 
-Call `validate_gt_indices` with the full stages array. Use this exact GT format for each item:
-- `{"type": "diagnosis", "icd_code": "...", "icd_version": 9|10, "display": "..."}`
-- `{"type": "procedure", "index": N, "icd_code": "...", "icd_version": 9|10, "display": "..."}`
-- `{"type": "medication", "action": "start", "index": N, "drug": "..."}` — new drug ordered for the first time
-- `{"type": "medication", "action": "stop", "drug": "..."}` — drug discontinued/held (no index)
-- `{"type": "medication", "action": "increase_dose", "drug": "..."}` — dose increase (no index)
-- `{"type": "medication", "action": "decrease_dose", "drug": "..."}` — dose decrease (no index)
-- `{"type": "plan", "section": "...", "span": "..."}`
+Decision:
+{decision}
 
-**Important:** All medication decisions (start, stop, hold, dose changes) must use the medication GT type with the appropriate action. Do NOT use plan GT for any medication decision.
+Step 1 — assign type:
+- medication: the decision is about ordering, stopping, or switching a drug
+- procedure: a procedural or surgical intervention performed on the patient
+- diagnosis: the physician establishes or confirms a specific clinical diagnosis that drives subsequent management
+- plan: any other attending-level management decision not covered above
 
-**If FAIL:** read each violation's `fix` field, correct the stages in your next tool call — do NOT narrate your intentions or output any text. Call `validate_gt_indices` again immediately with the corrected stages. Repeat until PASS. Do not proceed until the tool returns PASS.
+Step 2 — if type is medication, assign action:
+- start: a drug is newly ordered
+- stop: a drug is held, withheld, or discontinued
+- switch: one drug is replaced by a different drug
 
-Then call `validate_gt_novelty` with the same stages array (the `stages` parameter is required — always pass it). If FAIL, fix and re-call until PASS.
+Action must be one of start, stop, or switch when type is medication. Never null.
 
-**Step 2 — Manual checks (required; write the check letter and result before each assessment; fix any failure before proceeding):**
+Output JSON only:
+{{"type": "medication"|"procedure"|"diagnosis"|"plan", "action": "start"|"stop"|"switch"|null}}
 
-Output exactly: "Check A: PASS" or "Check A: FAIL — [what is wrong]" then fix if failed.
-
-**A. GT validity**: Is every GT item a physician decision or order? Lab values, vital signs, imaging findings, and emergency standby drugs (frequency "X1", "X1:PRN", "ONCE") are NOT valid GT — replace with the physician action that resulted from them.
-
-   For diagnosis GT items, apply a two-part filter. Remove a diagnosis if it fails EITHER test:
-
-   **Test 1 — Code exclusion.** Remove any code matching these prefixes (billing/administrative codes with no clinical decision content):
-   - Z85, Z86, Z87 (personal history), Z93, Z95, Z96 (device/implant presence), Z79 (long-term drug use)
-   - Z68 (BMI), Y (external cause), E (external cause, ICD-9), V (external cause, ICD-9)
-   - Y929, Z929 (unspecified place)
-   - R codes that are lab measurements (e.g. R8271 bacteriuria)
-
-   **Test 2 — Clinical relevance.** MIMIC discharge diagnosis tables contain all billed ICD codes, including pre-existing comorbidities added for billing (DRG) purposes. These are NOT physician decisions made during this admission. Remove a diagnosis if it describes a chronic pre-existing condition that was NOT actively managed or newly recognised during this admission. Keep a diagnosis if it meets ANY of:
-   - It is the primary reason for this admission (appears in the note's Discharge Diagnosis section), OR
-   - It is a surgical indication for a procedure performed this admission — keep it even if the surgery was pre-planned (e.g. tarsal tunnel syndrome, femur fracture, CAD leading to PCI), OR
-   - It represents a condition newly identified or first documented during this admission, OR
-   - It directly triggered a specific physician decision during this admission (e.g. a complication that required a medication, procedure, or plan GT in the same or preceding stage)
-
-   Background comorbidities (hypertension, diabetes, GERD, anxiety, CAD not directly treated this admission, etc.) that appear only for DRG billing must be removed.
-
-   Background comorbidities (hypertension, diabetes, CAD, COPD, GERD, anxiety, etc.) that were present before admission and had no active management decisions during this admission must be removed even if they appear in the ICD table.
-
-Output exactly: "Check B: PASS" or "Check B: FAIL — [duplicate items listed]" then fix if failed.
-
-**B. GT uniqueness across stages**: List every GT item from every stage side by side. Each clinical decision must appear in exactly one stage. A semantic duplicate exists when two items describe the same decision even in different words or different representations:
-   - Medication GT naming a drug AND a plan GT describing the same drug's administration → duplicate; remove the plan GT, keep the medication GT
-   - Two medication GT items for the same drug with the same action (e.g. action="stop" twice for the same drug, or "hold anticoagulation" as plan + medication/stop) → duplicate; keep the medication GT, remove the plan GT
-   - Plan GT span in one stage that describes the same action as a plan GT in another stage → duplicate; keep the one in the stage where that decision first occurs
-   - Same procedure type (by ICD code or description) in multiple stages → duplicate
-
-   When removing a duplicate leaves a stage with no GT: that stage is invalid. Either find a different decision for that stage's GT (a different physician action after that stage's range), or merge the stage with its neighbor and adjust the range.
-
-Output exactly: "Check C: PASS" or "Check C: FAIL — [which triggers fail]" then fix if failed.
-
-**C. Trigger safety**: Every trigger context must be non-empty and must NOT reveal the GT for that stage. Fail if:
-   - context is empty or missing
-   - context names the procedure/medication/diagnosis that IS the GT (e.g. trigger says "patient had endoscopy" when GT is endoscopy)
-   - context describes the clinical outcome rather than the opening transition (e.g. "patient stabilized after transfusion" reveals the treatment)
-   Triggers describe ONLY the event that opens the encounter — the presenting symptom, the handoff, or the transition into this stage. Rewrite any failing trigger.
-
-If any check fails, revise the stages and re-run the mechanical tools (Step 1) before continuing.
-
-**After all checks pass**, output the APPROVED PLAN:
-
-```
-APPROVED STAGE 1: <label>
-  range: [start, end]
-  gt: <list each GT item with type, index if applicable, and value>
-APPROVED STAGE 2: ...
-```
-
-Phase E formats this into JSON exactly as written — do not change GT items in Phase E.
+Set action to null only if type is not medication.

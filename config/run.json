@@ -1,0 +1,10 @@
+{
+  "manifest":      "data/batch_500_manifest.jsonl",
+  "limit":         null,
+  "skip_existing": true,
+  "concurrency": {
+    "plan":     4,
+    "interact": 1,
+    "eval":     4
+  }
+}

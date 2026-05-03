@@ -14,7 +14,7 @@ from preprocess.schemas.prepared_case_schema import validate_prepared_case
 _DEFAULT_OUT_DIR = Path(__file__).parent.parent.parent / "data" / "cases"
 
 # Fields that belong to the planner plan (exclude readview-added fields)
-_PLAN_STAGE_FIELDS = {"label", "index_range", "trigger", "available_agents", "gt"}
+_PLAN_STAGE_FIELDS = {"context_range", "gts"}
 
 
 def write_plan(planner_output: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path:
@@ -25,7 +25,7 @@ def write_plan(planner_output: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path:
     subject_id = planner_output["subject_id"]
     hadm_id    = planner_output["hadm_id"]
 
-    case_dir = out_dir / subject_id / hadm_id
+    case_dir = out_dir / subject_id / hadm_id / "plan"
     case_dir.mkdir(parents=True, exist_ok=True)
 
     plan = {
@@ -59,7 +59,7 @@ def write_prepared_case(payload: dict, out_dir: Path = _DEFAULT_OUT_DIR) -> Path
     subject_id = payload["subject_id"]
     hadm_id    = payload["hadm_id"]
 
-    case_dir = out_dir / subject_id / hadm_id
+    case_dir = out_dir / subject_id / hadm_id / "case"
     case_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = case_dir / "case.json"

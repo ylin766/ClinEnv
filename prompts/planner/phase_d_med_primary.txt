@@ -1,0 +1,14 @@
+A clinical decision may have multiple pharmacy records. Determine whether these records represent the same drug recorded multiple times (noise) or genuinely different drugs ordered as part of this decision.
+
+Decision: {decision}
+
+Pharmacy records:
+{records}
+
+If all records are for the same drug (same active ingredient, possibly different brand names, formulations, or dates):
+- Output {{"mode": "single", "primary_event_index": <index of the most representative record>}}
+
+If the records represent genuinely different drugs (different active ingredients, each serving a distinct role in the decision):
+- Output {{"mode": "all", "primary_event_index": null}}
+
+Output JSON only.

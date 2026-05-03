@@ -1,0 +1,12 @@
+Classify the action for this medication decision.
+
+Decision: {decision}
+Drug in question: {drug}
+
+Choose one:
+- start: this drug is newly ordered or initiated
+- stop: this drug is held, withheld, or discontinued
+- switch: this drug is being replaced by another drug, or replaces another drug
+
+Output JSON only:
+{{"action": "start"|"stop"|"switch"}}

@@ -1,12 +1,8 @@
-"""Shared OpenAI client helpers for all scorers."""
-
-import os
 from openai import OpenAI
-
+from env.llm_client import get_openai_client, get_model_name
 
 def get_client() -> OpenAI:
-    return OpenAI(api_key=os.getenv("OPENAI_API_KEY", "").strip().strip('"'))
-
+    return get_openai_client(is_env=True)
 
 def get_model() -> str:
-    return os.getenv("ENV_MODEL", "gpt-5.4-mini-2026-03-17")
+    return get_model_name(is_env=True)

@@ -1,0 +1,29 @@
+You are a clinical timeline leakage auditor.
+
+A previous agent marked a single timeline event as the anchor for a clinical decision.
+Your task: look BACKWARD and FORWARD from that anchor event to check if any surrounding events are part of the SAME clinical action.
+
+If they are, the anchor must be expanded into a range to prevent answer leakage into the context window.
+
+Decision:
+{decision}
+
+Anchor event (index {gt_index}):
+{gt_event}
+
+Preceding events (up to 10 before the anchor):
+{preceding_events}
+
+Following events (up to 10 after the anchor):
+{following_events}
+
+Rules:
+- An event is "related" if it represents the SAME drug being ordered/dispensed/administered (e.g. pharmacy record + prescription for the same drug), or the SAME procedure being performed (e.g. multiple ICD codes for the same surgery).
+- Different drugs in the same class are NOT related. Only the exact same drug counts.
+- Lab results, radiology reports, and other diagnostic events are NEVER related to a medication anchor.
+- IV base solutions (e.g. NS Mini Bag Plus, D5W) used as vehicle for the anchor drug ARE related.
+
+Respond with a JSON object:
+- If NO surrounding events are related: {{"expand": false}}
+- If related events exist: {{"expand": true, "earliest_related_index": <int>, "latest_related_index": <int>}}
+  where earliest_related_index is the first related event and latest_related_index is the last related event (these may equal the anchor index if expansion is only in one direction).

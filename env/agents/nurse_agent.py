@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from openai import OpenAI
+from env.llm_client import chat_complete
 
 _PROMPT = Path(__file__).parent.parent.parent / "prompts" / "env" / "nurse_agent.txt"
 
@@ -23,6 +24,8 @@ _TABLE_SUMMARY: dict[str, list[str]] = {
     "hosp_emar_detail_df":      ["medication", "administration_type", "event_txt", "event_time"],
     "radiology_note":           ["text"],
     "hosp_procedures_icd_df":   ["long_title_procedure", "icd_code", "event_time"],
+    "hosp_pharmacy_df":         ["medication", "status", "route", "event_time"],
+    "hosp_prescriptions_df":    ["drug", "dose_val_rx", "dose_unit_rx", "route", "frequency", "event_time"],
 }
 
 
@@ -51,7 +54,8 @@ def answer(readview: dict, query: str, client: OpenAI, model: str) -> str:
     """Return the nurse's response to a physician query."""
     system     = _PROMPT.read_text(encoding="utf-8").strip()
     events_ctx = _format_events(readview.get("events", []))
-    resp = client.chat.completions.create(
+    resp = chat_complete(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": f"{system}\n\n---\nBedside Data:\n{events_ctx}"},

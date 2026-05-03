@@ -18,7 +18,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 from preprocess.loaders.ehr_loader import load_admission
 from preprocess.loaders.prior_admissions import load_prior_admissions
-from preprocess.planners.decision_planner import plan_decision_points
+from preprocess.planners import plan_decision_points
 from preprocess.readviews.readview_builder import build_readviews
 from preprocess.writers.prepared_case_writer import write_plan, write_prepared_case, update_manifest
 
@@ -26,7 +26,7 @@ DATA_ROOT = str(Path(__file__).parent.parent / "mimic-ext-time-series" / "Merge"
 OUT_DIR   = Path(__file__).parent.parent / "data" / "cases"
 
 
-def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
+def process_one(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None = None, reuse_plan: bool = False) -> dict:
     """
     Run the full preprocessing pipeline for one admission.
     Returns the prepared case dict.
@@ -42,13 +42,32 @@ def process_one(subject_id: str, hadm_id: str, verbose: bool = True) -> dict:
         print(f"Loaded {len(record.timeline)} timeline events")
 
     # 2. Plan decision stages
-    planner_out = plan_decision_points(record, verbose=verbose)
-    stages = planner_out["stages"]
-    if verbose:
-        print(f"Planner produced {len(stages)} stages")
-
-    # 3. Save planner output before readviews are added
-    write_plan({"subject_id": subject_id, "hadm_id": hadm_id, "stages": stages}, OUT_DIR)
+    plan_path = OUT_DIR / str(subject_id) / str(hadm_id) / "plan" / "plan.json"
+    if reuse_plan and plan_path.exists():
+        if verbose:
+            print(f"Reusing existing plan: {plan_path}")
+        stages = json.loads(plan_path.read_text(encoding="utf-8"))["stages"]
+        # Backwards compatibility with old plan format
+        for s in stages:
+            if "index_range" in s:
+                s["context_range"] = s.pop("index_range")
+            if "gt" in s:
+                s["gts"] = s.pop("gt")
+            
+            # Map old fields to new schema
+            for g in s.get("gts", []):
+                if "drug" in g:
+                    g["drug_name"] = g.pop("drug")
+            
+            # Filter out 'plan' type which is no longer supported in the core pipeline
+            s["gts"] = [g for g in s.get("gts", []) if g.get("type") != "plan"]
+    else:
+        planner_out = plan_decision_points(record, verbose=verbose, model=model)
+        stages = planner_out["stages"]
+        if verbose:
+            print(f"Planner produced {len(stages)} stages")
+        # 3. Save planner output before readviews are added
+        write_plan({"subject_id": subject_id, "hadm_id": hadm_id, "stages": stages}, OUT_DIR)
 
     # 4. Build readviews
     enriched_stages = build_readviews(record, stages)
@@ -89,6 +108,9 @@ def main() -> int:
     parser.add_argument("--hadm-id",   help="Single hadm_id (use with --subject-id)")
     parser.add_argument("--limit",     type=int, default=None,
                         help="Max number of cases to process from manifest")
+    parser.add_argument("--model",     default=None,
+                        help="Override planner model (default: gpt-5.4-mini-2026-03-17)")
+    parser.add_argument("--reuse-plan", action="store_true", help="Reuse existing plan.json if available")
     parser.add_argument("--quiet",     action="store_true", help="Suppress verbose output")
     args = parser.parse_args()
 
@@ -100,7 +122,7 @@ def main() -> int:
             print("--hadm-id is required with --subject-id", file=sys.stderr)
             return 1
         try:
-            process_one(args.subject_id, args.hadm_id, verbose=verbose)
+            process_one(args.subject_id, args.hadm_id, verbose=verbose, model=args.model, reuse_plan=args.reuse_plan)
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             traceback.print_exc()
@@ -119,7 +141,7 @@ def main() -> int:
             sid, hid = rec["subject_id"], rec["hadm_id"]
             print(f"\n[{i}/{len(records)}] {sid}/{hid}")
             try:
-                process_one(sid, hid, verbose=verbose)
+                process_one(sid, hid, verbose=verbose, model=args.model, reuse_plan=args.reuse_plan)
             except Exception as e:
                 msg = f"FAILED {sid}/{hid}: {e}"
                 print(msg, file=sys.stderr)

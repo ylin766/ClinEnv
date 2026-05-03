@@ -28,8 +28,11 @@ _NURSE_TABLES = {
     "ehr_ingredientevents_df",  # IV ingredient detail
     "hosp_emar_detail_df",      # medication administration record
     "radiology_note",           # radiology reports
-    "hosp_procedures_icd_df",   # ICD procedure records — visible once within stage range
-                                # (GT protection is handled by index_range boundary, not by hiding the table)
+    "hosp_procedures_icd_df",   # ICD procedure records — GT protection via stage boundary
+    "hosp_pharmacy_df",         # pharmacy dispensing records (active/discontinued status)
+    "hosp_prescriptions_df",    # prescription orders (dose, route, frequency)
+                                # Both: GT protection via stage boundary (GT index > stage_end)
+                                # Within-window records are past facts the nurse knows about
 }
 
 _LAB_TABLES = {
@@ -106,14 +109,21 @@ def build_readviews(record: AdmissionRecord, stages: list) -> list:
 
     enriched = []
     for stage in stages:
-        start_idx, end_idx = stage["index_range"]
+        start_idx, end_idx = stage["context_range"]
         visible = [e for e in record.timeline if e["index"] <= end_idx]
         stage_events = [e for e in record.timeline if start_idx <= e["index"] <= end_idx]
+
+        available_agents = ["patient", "history"]
+        if any(e["source_table"] in _NURSE_TABLES for e in stage_events):
+            available_agents.append("nurse")
+        if any(e["source_table"] in _LAB_TABLES for e in stage_events):
+            available_agents.append("lab")
 
         enriched.append({
             **stage,
             "events": stage_events,          # events within this stage only (used internally)
             "visible_events": visible,        # cumulative [0, end_idx] — used by direct mode prompt
+            "available_agents": available_agents,
             "readviews": {
                 "patient": patient_rv,
                 "nurse":   _build_nurse_readview(visible),

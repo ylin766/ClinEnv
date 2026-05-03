@@ -2,18 +2,18 @@
 
 Reads episode logs produced by env/ and computes scores independently.
 
-Scoring logic:
-  - icd_procedure : submitted procedure text → ICD code mapping → HDF1
-  - icd_diagnosis : submitted diagnosis text → ICD code mapping → HDF1
-  - medication    : submitted drug name → ATC hierarchy partial credit
-  - note_section  : LLM binary judge across all submissions
+Outcome scoring logic:
+  - procedure  : submitted text → ICD code mapping → HDF1
+  - diagnosis  : submitted text → ICD code mapping → HDF1
+  - medication : action match (weight 0.6) + ATC drug match (weight 0.4)
+                 precision uses continuous partial credit with a floor threshold
 
 Matching:
-  Hungarian algorithm assigns each GT item to at most one submission
-  (and vice versa), maximising total score. note_section items are
-  handled separately (pool of all submissions, not one-to-one).
+  Hungarian algorithm assigns each GT item to at most one submission.
 
 Final metric: F1 score (harmonic mean of precision and recall).
+  - recall    = weighted_score / total_primary_weight  (continuous, partial credit)
+  - precision = sum(clipped_scores) / n_subs           (continuous, threshold-floored)
 """
 
 from __future__ import annotations
@@ -25,16 +25,51 @@ from schema import GTItem, Submission, StageResult
 from evaluation.scorers.icd_scoring  import score_icd
 from evaluation.scorers.atc_scoring  import score_medication
 from evaluation.scorers.note_scoring import score_note_section
+from env.config_loader import get_config
 
 
 # ------------------------------------------------------------------ #
 # GT-type → vocabulary mapping                                        #
 # ------------------------------------------------------------------ #
 
+def _detect_icd_version(code: str) -> int:
+    """Infer ICD version from code format, overriding potentially wrong metadata.
+
+    Heuristics:
+      Diagnosis (CM):
+        - Starts with letter other than V or E → ICD10
+        - Starts with E: ICD9 E-codes are E800–E999 (digits 800–999 after E);
+          anything else (e.g. E11, E119) is ICD10
+        - Starts with V or is all-numeric → ICD9
+      Procedure:
+        - All-numeric (with optional dot) → ICD9PROC
+        - Otherwise (7-char alphanumeric) → ICD10PCS
+    """
+    if not code:
+        return 9
+    c = code.strip().upper().replace(".", "")
+    first = c[0]
+    if first.isdigit():
+        return 9
+    if first == "V":
+        return 9
+    if first == "E":
+        rest = c[1:]
+        if rest.isdigit() and len(rest) >= 3 and 800 <= int(rest[:3]) <= 999:
+            return 9
+        return 10
+    # Any other letter (A–D, F–Z except V/E) → ICD10
+    return 10
+
+
 def _icd_vocab(gt_item: dict) -> str:
-    """Return the pyhealth vocabulary name for a GT item."""
     gt_type = gt_item.get("type", "")
-    version = gt_item.get("icd_version", 9)
+    code    = gt_item.get("icd_code") or gt_item.get("value", "")
+    # Use format-based detection; fall back to metadata only when code is absent
+    if code:
+        version = _detect_icd_version(code)
+    else:
+        version = gt_item.get("icd_version", 9)
     if gt_type == "procedure":
         return "ICD9PROC" if version == 9 else "ICD10PCS"
     else:
@@ -45,27 +80,70 @@ def _icd_vocab(gt_item: dict) -> str:
 # Pair scoring                                                         #
 # ------------------------------------------------------------------ #
 
+def _score_medication_pair(gt_item: GTItem, submission: Submission) -> float:
+    """Score a (GT medication, submission) pair.
+
+    Action is a hard gate: if the action does not match the GT action,
+    the pair scores 0 regardless of how close the drug name is.
+    When action matches, the ATC-hierarchy drug score determines the final score.
+
+    For adjust actions, direction (increase/decrease) applies a 0.5× penalty
+    when both sides specify a direction and they disagree.
+
+    If either the GT or submission lacks an action field, the gate is skipped
+    and only the drug score is used (for backwards compatibility with older logs).
+    """
+    gt_action  = (gt_item.get("action")  or "").strip().lower()
+    sub_action = (submission.get("action") or "").strip().lower()
+
+    # Gate: action must match when both sides specify an action
+    if gt_action and sub_action and gt_action != sub_action:
+        return 0.0
+
+    drug_score = score_medication(
+        submission.get("value", ""),
+        gt_item.get("drug_name", ""),
+    )
+
+    # Direction partial penalty for adjust
+    if gt_action == "adjust":
+        gt_dir  = (gt_item.get("direction")   or "").strip().lower()
+        sub_dir = (submission.get("direction") or "").strip().lower()
+        if gt_dir and sub_dir and gt_dir != sub_dir:
+            drug_score *= 0.5
+
+    return drug_score
+
+
 def _score_pair(gt_item: GTItem, submission: Submission) -> float:
     """Score one (GT item, submission) pair. Returns float in [0, 1].
 
-    Driven by gt type. Type mismatch returns 0.
+    Type mismatch always returns 0.
     """
     gt_type  = gt_item.get("type", "")
     sub_type = submission.get("type", "")
-    value    = submission.get("value", "")
 
     if gt_type != sub_type:
         return 0.0
 
-    if gt_type in ("procedure", "diagnosis"):
-        return score_icd(value, gt_item["icd_code"], _icd_vocab(gt_item))
+    if gt_type in ("diagnosis", "procedure"):
+        icd_code = gt_item.get("icd_code")
+        # Fallback: extract ICD code embedded in description as "[CODE] Title"
+        if not icd_code:
+            import re as _re
+            m = _re.match(r"^\[([^\]]+)\]", gt_item.get("description", ""))
+            if m:
+                icd_code = m.group(1)
+        if not icd_code:
+            return 0.0
+        return score_icd(
+            submission.get("value", ""),
+            icd_code,
+            _icd_vocab({**gt_item, "icd_code": icd_code}),
+        )
 
     if gt_type == "medication":
-        return score_medication(value, gt_item.get("drug", ""))
-
-    if gt_type == "plan":
-        result = score_note_section(gt_item.get("span", ""), [submission])
-        return result["score"]
+        return _score_medication_pair(gt_item, submission)
 
     return 0.0
 
@@ -75,11 +153,7 @@ def _score_pair(gt_item: GTItem, submission: Submission) -> float:
 # ------------------------------------------------------------------ #
 
 def _match(gt_items: list[GTItem], submissions: list[Submission]) -> list[dict]:
-    """Optimal one-to-one matching via Hungarian algorithm.
-
-    All GT types use the same pair-scoring + Hungarian matching.
-    Returns a list of match dicts: {gt_item, submission, score, method}.
-    """
+    """Optimal one-to-one matching via Hungarian algorithm."""
     if not gt_items or not submissions:
         return []
 
@@ -89,24 +163,22 @@ def _match(gt_items: list[GTItem], submissions: list[Submission]) -> list[dict]:
     )
     row_ind, col_ind = linear_sum_assignment(matrix, maximize=True)
 
-    matches = []
-    for r, c in zip(row_ind, col_ind):
-        gt_type = gt_items[r].get("type", "")
-        matches.append({
+    return [
+        {
             "gt_item":    gt_items[r],
             "submission": submissions[c],
             "score":      float(matrix[r, c]),
-            "method":     "llm_binary" if gt_type == "plan" else "hungarian",
-        })
-    return matches
+            "method":     "hungarian",
+        }
+        for r, c in zip(row_ind, col_ind)
+    ]
 
 
 # ------------------------------------------------------------------ #
-# F2 metric                                                            #
+# F1 metric                                                            #
 # ------------------------------------------------------------------ #
 
 def _f1(precision: float, recall: float) -> float:
-    """F1 score — harmonic mean of precision and recall."""
     denom = precision + recall
     return (2 * precision * recall / denom) if denom else 0.0
 
@@ -116,13 +188,14 @@ def _f1(precision: float, recall: float) -> float:
 # ------------------------------------------------------------------ #
 
 def score_stage(stage_log: StageResult) -> dict:
-    """Score one stage log. Returns a score dict added to the stage_log.
+    """Score one stage log. Returns a score dict.
 
-    Input:  stage_log with keys 'submissions' and 'gt'
-    Output: score dict with recall, precision, F2, and per-match details
+    Precision is continuous (sum of clipped match scores / n_subs).
+    Scores below precision_threshold are treated as 0 for precision only;
+    recall still uses the full continuous partial credit.
     """
     submissions = stage_log.get("submissions", [])
-    gt          = stage_log.get("gt", [])
+    gt          = stage_log.get("gts", [])
 
     if not gt:
         return {"total": 0, "hits": 0.0, "recall": 0.0,
@@ -130,57 +203,64 @@ def score_stage(stage_log: StageResult) -> dict:
 
     matches = _match(gt, submissions)
 
-    # Recall: average match score across all GT items
+    # ── Recall: weighted partial credit ──────────────────────────────
+    eval_conf = get_config("eval")
+    weights   = eval_conf.get("weights", {})
+    W_PRIMARY   = weights.get("primary",   1.0)
+    W_SECONDARY = weights.get("secondary", 0.8)
+
     gt_scores = {id(g): 0.0 for g in gt}
     for m in matches:
         gt_scores[id(m["gt_item"])] = m["score"]
-    recall = sum(gt_scores.values()) / len(gt)
 
-    # Precision: fraction of submissions that matched (score > 0)
-    matched_sub_ids = {id(m["submission"]) for m in matches if m["score"] > 0}
-    precision = len(matched_sub_ids) / len(submissions) if submissions else 1.0
+    weighted_score       = 0.0
+    total_primary_weight = 0.0
+    for g in gt:
+        is_primary = g.get("primary", True)
+        weight     = W_PRIMARY if is_primary else W_SECONDARY
+        weighted_score += gt_scores[id(g)] * weight
+        if is_primary:
+            total_primary_weight += W_PRIMARY
+
+    if total_primary_weight == 0:
+        total_primary_weight = len(gt) * W_PRIMARY
+        weighted_score = sum(gt_scores.values()) * W_PRIMARY
+
+    recall = min(1.0, weighted_score / total_primary_weight)
+
+    # ── Precision: continuous with threshold floor ────────────────────
+    med_conf  = eval_conf.get("outcome_scorers", {}).get("medication_atc", {})
+    threshold = med_conf.get("precision_threshold", 0.3)
+
+    sub_score_map: dict[int, float] = {id(s): 0.0 for s in submissions}
+    for m in matches:
+        sub_score_map[id(m["submission"])] = m["score"]
+
+    clipped_sum = sum(
+        s if s >= threshold else 0.0
+        for s in sub_score_map.values()
+    )
+    precision = clipped_sum / len(submissions) if submissions else 0.0
 
     f1 = _f1(precision, recall)
 
     return {
-        "total":      len(gt),
-        "hits":       round(sum(gt_scores.values()), 3),
-        "recall":     round(recall, 3),
-        "precision":  round(precision, 3),
-        "f1":         round(f1, 3),
-        "score":      round(f1, 3),
-        "matches":    matches,
+        "total":           len(gt),
+        "hits":            round(sum(gt_scores.values()), 3),
+        "recall":          round(recall,    3),
+        "precision":       round(precision, 3),
+        "f1":              round(f1,        3),
+        "score":           round(f1,        3),
+        "matches":         matches,
         "all_submissions": submissions,
     }
 
 
 def score_episode(episode_log: dict) -> dict:
-    """Score all stages of an episode log. Returns enriched episode dict.
-
-    Adds 'score' to each stage and computes overall weighted F2.
-    Does NOT modify the original dict in place — returns a new one.
-    """
+    """Score all stages of an episode log."""
     scored_stages = []
     for stage in episode_log.get("stages", []):
         score = score_stage(stage)
         scored_stages.append({**stage, "score": score})
 
-    total_gt   = sum(s["score"]["total"] for s in scored_stages)
-    total_hits = sum(s["score"]["hits"]  for s in scored_stages)
-    total_subs = sum(len(s.get("submissions", [])) for s in scored_stages)
-    matched    = sum(
-        len([m for m in s["score"]["matches"] if m["score"] > 0])
-        for s in scored_stages
-    )
-
-    overall_recall    = total_hits / total_gt if total_gt else 0.0
-    overall_precision = matched / total_subs  if total_subs else 1.0
-    overall_f1        = _f1(overall_precision, overall_recall)
-
-    return {
-        **episode_log,
-        "stages":        scored_stages,
-        "overall_score": round(overall_f1, 3),
-        "overall_hits":  round(total_hits, 3),
-        "overall_total": total_gt,
-    }
+    return {**episode_log, "stages": scored_stages}

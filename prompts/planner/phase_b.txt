@@ -1,69 +1,20 @@
-## Phase B — Locate decisions in the timeline
+You are a timeline event locator.
 
-Call get_timeline_index() to get the full event sequence.
-Call get_diagnoses() for discharge GT.
+Your task: find the single best timeline event that corresponds to the given decision.
 
-**Critical constraint: only work from the D-labelled items identified in Phase A.** Do NOT rediscover or add items that were classified as Background (B) or Clinical Information (I) in Phase A. If a physician action was classified B in Phase A (e.g., applying a cast as part of a pre-planned surgical protocol, routine post-op care that would have happened regardless), it MUST NOT appear as GT here, even if it looks like a physician action.
+Current decision to find:
+{decision}
 
-For each decision identified in Phase A (D-labelled items only), find its position in the timeline.
+Timeline events in current window (index {start} to {end} of {total}):
+{events}
 
----
+Rules:
+- For MEDICATION decisions: look for the EXACT drug being ordered. The drug name in the event must match the drug in the decision (brand names and generic names for the same drug are equivalent). Do NOT match a different drug just because it is in the same drug class or treats the same condition.
+- For PROCEDURE decisions: look for ICD procedure codes or radiology reports matching the specific operation.
+- Match by clinical meaning, not just similarity — a switch to drug A is NOT the same as giving drug B.
+- Pick the single most representative event. If there are multiple related records (e.g. pharmacy + prescription for the same drug), just pick any one of them — a later phase will handle expanding to a range.
 
-### Locating medication decisions
+If the decision is NOT found in this window, output:
+{{"found": false}}
 
-Every medication GT must have an `action` that describes what the physician did. Medication decisions must NOT be represented as plan GT — use the medication GT type with the correct action.
-
-**Action classification:**
-- `"start"` — physician orders a drug for the first time in response to a clinical finding. Requires a timeline index (first appearance of the drug). The drug must NOT already appear in the timeline before the stage's end.
-- `"stop"` — physician discontinues or holds a drug the patient is currently taking (e.g. "held anticoagulation", "stopped warfarin", "Lovenox was held"). No timeline index needed.
-- `"increase_dose"` — physician increases the dose of an existing drug. No timeline index needed.
-- `"decrease_dose"` — physician decreases the dose of an existing drug. No timeline index needed.
-
-For `"start"` actions: call get_events_by_index on the relevant range to confirm the drug's first appearance in the timeline. The GT index is the first event where this drug is ordered during this admission.
-
-**Qualifying medication decisions** — the drug must be ordered for the first time as a direct physician response to a specific clinical situation:
-- Anticoagulants (heparin, enoxaparin, warfarin, apixaban, rivaroxaban, argatroban)
-- Antibiotics for a new or specific infection
-- Vasopressors or inotropes (norepinephrine, dopamine, dobutamine)
-- Insulin initiation or major dose adjustment
-- Disease-specific agents (immunosuppressants, chemotherapy, biologics, antifungals)
-- Any drug newly ordered as a direct physician response to a specific acute clinical event, where the ordering requires attending-level judgment
-
-**Not a qualifying medication:**
-- Routine electrolytes (KCl, MgSO4, calcium, phosphate, Neutra-Phos)
-- Maintenance medications already ordered before the triggering clinical event
-- Daily pharmacy refreshes of existing orders
-- Routine maintenance fluids (only qualify when ordered as an acute hemodynamic intervention)
-
-**Pre-admission events:** Events marked `pre_admission: true` occurred before this admission. They cannot be GT.
-
-**Novelty check (start only):** If the drug already appears in the timeline before the expected decision point, it is a pharmacy refresh — not a new start decision. Check whether the BHC describes a specific decision to hold, stop, or restart the drug; if so, use action="stop" or action="start" at the correct index.
-
-### Locating procedure decisions
-
-Find the ICD procedure event index. Events marked `pre_admission: true` are excluded.
-
-**Primary code selection:** When multiple ICD procedure codes share the same event_time (same operation), select only ONE — the most therapeutically representative code. Prefer the code that names the core intervention (e.g. drug-eluting stent placement, valve replacement, nephrectomy). Drop adjunct billing codes such as approach codes, vessel count codes, or imaging guidance codes. One surgical event → one procedure GT item. Set stage end = (selected index) − 1.
-
-### Plan decisions (note-only)
-
-If a physician decision has no corresponding event in the timeline — or if the drug/procedure was already present before the triggering event (novelty check fails) — it MUST be represented as plan GT. Do NOT assign type=procedure or type=medication with a null or missing index. A procedure or medication GT without a valid timeline index is invalid.
-
-Apply the valid span rule from the system prompt:
-- The span must capture only the physician action
-- Remove any reasoning clauses ("because", "due to", "likely caused by")
-- Remove any outcome clauses ("resulting in", "with return to", "which improved", "with resolution")
-- One span per distinct decision; do not combine multiple decisions into one span
-
-### Post-operative admissions
-
-If all procedure events are marked `pre_admission: true`, the surgery is background. Seek decisions made during the admission. If no qualifying medication GT exists, identify plan GT from the BHC for each non-discharge stage.
-
----
-
-Output the confirmed decision list with:
-- Type: medication / procedure / plan / diagnosis
-- Index (or "note only")
-- GT dict
-
-Before proceeding to Phase C.
+If found, call mark_single with the event index.

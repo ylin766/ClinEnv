@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openai import OpenAI
+from env.llm_client import chat_complete
 
 _PROMPT = Path(__file__).parent.parent.parent / "prompts" / "env" / "patient_agent.txt"
 
@@ -32,7 +33,8 @@ def answer(readview: dict, question: str, client: OpenAI, model: str) -> str:
     """Return the patient's answer to a doctor's question."""
     system  = _PROMPT.read_text(encoding="utf-8").strip()
     context = _build_context(readview)
-    resp = client.chat.completions.create(
+    resp = chat_complete(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": f"{system}\n\n---\n{context}"},
