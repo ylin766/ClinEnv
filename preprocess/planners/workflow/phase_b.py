@@ -1,5 +1,7 @@
 """
 Phase B — locate each decision in the timeline using a sliding-window tool-calling agent.
+          Includes leakage scan (formerly Phase B2): expands single anchors to index_range
+          when related events are found in a ±10 event window.
 
 Input:  decisions from Phase A
 Output: decisions enriched with `index` (int|None) or `index_range` ([start, end])
@@ -7,10 +9,14 @@ Output: decisions enriched with `index` (int|None) or `index_range` ([start, end
 """
 
 import json
+import re
 
 from preprocess.loaders.ehr_loader import AdmissionRecord
 from ..tools import B_TOOLS, validate_mark
 from .helpers import call_llm, fmt_event_label, fmt_events, load_prompt, STEP
+
+LOOKBACK = 10
+LOOKFORWARD = 10
 
 
 def phase_b(client, record: AdmissionRecord, decisions: list,
@@ -128,5 +134,71 @@ def phase_b(client, record: AdmissionRecord, decisions: list,
     if verbose:
         found_count = sum(1 for d in output if d.get("index") is not None or d.get("index_range"))
         print(f"  → {found_count}/{len(output)} decisions located ({len(deleted)} deleted)")
+
+    return _leakage_scan(client, record, output, verbose=verbose, model=model)
+
+
+def _leakage_scan(client, record: AdmissionRecord, decisions: list,
+                  verbose: bool = True, model: str | None = None) -> list:
+    """Bidirectional leakage scanner (formerly Phase B2)."""
+    if verbose:
+        print("\n---------- B leakage scan ----------")
+
+    prompt_template = load_prompt("phase_b2.txt")
+    llm_kwargs = {"model": model} if model else {}
+    timeline = record.timeline
+    total = len(timeline)
+
+    output = []
+    for d in decisions:
+        if d.get("index_range") or d.get("index") is None:
+            output.append(d)
+            continue
+
+        gt_idx = d["index"]
+        back_start = max(0, gt_idx - LOOKBACK)
+        fwd_end = min(total - 1, gt_idx + LOOKFORWARD)
+
+        preceding_lines = [f"  [{i}] {fmt_event_label(timeline[i])}" for i in range(back_start, gt_idx)]
+        following_lines = [f"  [{i}] {fmt_event_label(timeline[i])}" for i in range(gt_idx + 1, fwd_end + 1)]
+
+        prompt = prompt_template.format(
+            decision=json.dumps(d, ensure_ascii=False),
+            gt_index=gt_idx,
+            gt_event=f"[{gt_idx}] {fmt_event_label(timeline[gt_idx])}",
+            preceding_events="\n".join(preceding_lines) or "  (none)",
+            following_events="\n".join(following_lines) or "  (none)",
+        )
+
+        resp = call_llm(client, [{"role": "user", "content": prompt}], **llm_kwargs)
+        text = resp.choices[0].message.content or ""
+        m = re.search(r"\{[^}]+\}", text)
+        result = {}
+        if m:
+            try:
+                result = json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+
+        if result.get("expand"):
+            earliest = max(0, min(result.get("earliest_related_index", gt_idx), gt_idx))
+            latest = min(total - 1, max(result.get("latest_related_index", gt_idx), gt_idx))
+            if earliest < gt_idx or latest > gt_idx:
+                entry = dict(d)
+                del entry["index"]
+                entry["index_range"] = [earliest, latest]
+                if verbose:
+                    print(f'  [B] decision {d["id"]}: expanded index {gt_idx} → range [{earliest},{latest}]')
+                output.append(entry)
+                continue
+
+        if verbose:
+            print(f'  [B] decision {d["id"]}: index {gt_idx} confirmed (no leakage)')
+        output.append(d)
+
+    if verbose:
+        expanded = sum(1 for d in output if d.get("index_range"))
+        single = sum(1 for d in output if d.get("index") is not None)
+        print(f"  → {expanded} expanded to ranges, {single} confirmed as single index")
 
     return output

@@ -1,7 +1,7 @@
 """
 Planner entry point with enhanced per-case logging.
 
-Pipeline: Phase A -> Phase B -> Phase B2 -> Phase C -> merge -> Phase D
+Pipeline: Phase A -> Phase B -> Phase C -> Phase D -> Phase E
 """
 
 import json
@@ -20,7 +20,7 @@ from env.llm_client import get_openai_client, get_anthropic_client
 
 from preprocess.loaders.ehr_loader import load_admission
 from env.config_loader import get_config
-from .workflow import phase_a, phase_b, phase_b2, phase_c, phase_d, scan_diagnoses
+from .workflow import phase_a, phase_b, phase_c, phase_d, phase_e
 from .workflow.helpers import DEFAULT_MODEL
 
 DATA_ROOT = str(Path(__file__).parent.parent.parent / "mimic-ext-time-series" / "Merge" / "ehr_by_subject")
@@ -59,9 +59,9 @@ def run(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None =
         record = load_admission(subject_id, hadm_id, DATA_ROOT)
         lprint(f"Timeline size: {len(record.timeline)} events")
 
-        # Step 0: Scanned Diagnoses
-        lprint("\n[STEP 0] Scanning Diagnoses...")
-        scanned_diags = scan_diagnoses(client, record, verbose=False, model=model)
+        # Step 0: Phase D (Diagnosis Scanning)
+        lprint("\n[PHASE D] Scanning Diagnoses...")
+        scanned_diags = phase_d(client, record, verbose=False, model=model)
         lprint(f"Found {len(scanned_diags)} groundable diagnoses")
 
         # Step 1: Phase A
@@ -70,10 +70,9 @@ def run(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None =
         for i, d in enumerate(decisions):
             lprint(f"  {i}: [{d.get('type_hint', d.get('type', '?'))}] {d.get('description', '')}")
 
-        # Step 2: Phase B & B2
-        lprint("\n[PHASE B/B2] Locating Events...")
+        # Step 2: Phase B
+        lprint("\n[PHASE B] Locating Events...")
         located = phase_b(client, record, decisions, verbose=False, model=model)
-        located = phase_b2(client, record, located, verbose=False, model=model)
         for i, l in enumerate(located):
             idx = l.get('index')
             if idx is None:
@@ -86,9 +85,9 @@ def run(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None =
         stages = phase_c(client, record, [], verbose=False, model=model, scanned_diagnoses=scanned_diags, existing_stages=stages)
         lprint(f"Built {len(stages)} stages")
 
-        # Step 4: Phase D (Classification)
-        lprint("\n[PHASE D] Classifying...")
-        stages = phase_d(client, stages, record.timeline, verbose=False, model=model)
+        # Step 4: Phase E (Classification)
+        lprint("\n[PHASE E] Classifying...")
+        stages = phase_e(client, stages, record.timeline, verbose=False, model=model)
 
         lprint("\n" + "="*20 + " FINAL RESULT " + "="*20)
         for i, s in enumerate(stages):
