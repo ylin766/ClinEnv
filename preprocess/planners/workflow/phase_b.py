@@ -85,14 +85,6 @@ def phase_b(client, record: AdmissionRecord, decisions: list,
                         if verbose:
                             evt = record.timeline[args["index"]]
                             print(f'  [B] decision {decision["id"]} → index {args["index"]}: {fmt_event_label(evt)}')
-                    elif name == "mark_range":
-                        results[decision["id"]] = {"index_range": [args["start_index"], args["end_index"]]}
-                        last_found_end = args["end_index"] + 1
-                        found = True
-                        if verbose:
-                            print(f'  [B] decision {decision["id"]} → range [{args["start_index"]},{args["end_index"]}]:')
-                            for idx in range(args["start_index"], args["end_index"] + 1):
-                                print(f'       [{idx}] {fmt_event_label(record.timeline[idx])}')
                     tool_result = {"status": "ok"}
 
                 messages.append({

@@ -111,8 +111,10 @@ def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
         env["BENCHMARK_RUNTIME_CONFIG"] = str(_runtime_config_path)
     try:
         subprocess.run(cmd, check=True, cwd=str(_ROOT),
-                       capture_output=True, text=True, env=env)
+                       capture_output=True, text=True, env=env, timeout=1800)
         return True, ""
+    except subprocess.TimeoutExpired as e:
+        return False, "HARD TIMEOUT (30 mins)"
     except subprocess.CalledProcessError as e:
         return False, (e.stderr or "").strip()[-200:]
 
@@ -127,7 +129,7 @@ def stage_plan(conf: dict, manifest: str | None, limit: int | None,
 
     all_cases            = _load_manifest(manifest)
     todo, done, deferred = _select(all_cases, (lambda s, h: skip and _has_case(s, h)), limit)
-    print(f"[plan]  total={len(all_cases)}  done={done}  run={len(todo)}  deferred={deferred}  workers={workers}")
+    print(f"[plan]  total={len(all_cases)}  done={done}  run={len(todo)}  deferred={deferred}  workers={workers}", flush=True)
     if not todo:
         return
 
@@ -145,7 +147,7 @@ def stage_plan(conf: dict, manifest: str | None, limit: int | None,
             done += ok; fail += not ok
             if verbose or not ok:
                 print(f"  [{i}/{len(todo)}] {result}", flush=True)
-    print(f"[plan]  done={done}  fail={fail}")
+    print(f"[plan]  done={done}  fail={fail}", flush=True)
 
 
 def stage_interact(conf: dict, manifest: str | None, limit: int | None,
@@ -163,7 +165,7 @@ def stage_interact(conf: dict, manifest: str | None, limit: int | None,
     no_plan              = len(all_cases) - len(planned)
     todo, done, deferred = _select(planned, (lambda s, h: skip and _has_run(s, h, slug)), limit)
     print(f"[interact]  model={model}  total={len(all_cases)}  no_plan={no_plan}  "
-          f"done={done}  run={len(todo)}  deferred={deferred}  workers={workers}")
+          f"done={done}  run={len(todo)}  deferred={deferred}  workers={workers}", flush=True)
     if not todo:
         return
 
@@ -181,7 +183,10 @@ def stage_interact(conf: dict, manifest: str | None, limit: int | None,
             done += ok; fail += not ok
             if verbose or not ok:
                 print(f"  [{i}/{len(todo)}] {result}", flush=True)
-    print(f"[interact]  done={done}  fail={fail}")
+            if not ok and ("Connection error" in result or "APIConnectionError" in result):
+                print("\n[FATAL] VPN/Network disconnect detected. Aborting the entire batch to save DeepSeek quota.", flush=True)
+                import os; os._exit(1)
+    print(f"[interact]  done={done}  fail={fail}", flush=True)
 
 
 def stage_eval(conf: dict, manifest: str | None, limit: int | None,
@@ -225,7 +230,7 @@ def stage_eval(conf: dict, manifest: str | None, limit: int | None,
             done += ok; fail += not ok
             if verbose or not ok:
                 print(f"  [{i}/{len(todo)}] {result}", flush=True)
-    print(f"[eval]  done={done}  fail={fail}")
+    print(f"[eval]  done={done}  fail={fail}", flush=True)
 
 
 # ------------------------------------------------------------------ #

@@ -5,15 +5,14 @@ Reads episode logs produced by env/ and computes scores independently.
 Outcome scoring logic:
   - procedure  : submitted text → ICD code mapping → HDF1
   - diagnosis  : submitted text → ICD code mapping → HDF1
-  - medication : action match (weight 0.6) + ATC drug match (weight 0.4)
-                 precision uses continuous partial credit with a floor threshold
+  - medication : action gate + ATC-hierarchy drug score
 
 Matching:
-  Hungarian algorithm assigns each GT item to at most one submission.
+  Per-type Hungarian algorithm assigns each GT item to at most one submission.
 
 Final metric: F1 score (harmonic mean of precision and recall).
-  - recall    = weighted_score / total_primary_weight  (continuous, partial credit)
-  - precision = sum(clipped_scores) / n_subs           (continuous, threshold-floored)
+  - recall    = sum(matched_scores) / n_gt    (continuous partial credit)
+  - precision = sum(matched_scores) / n_subs  (continuous partial credit)
 """
 
 from __future__ import annotations
@@ -24,9 +23,6 @@ from scipy.optimize import linear_sum_assignment
 from schema import GTItem, Submission, StageResult
 from evaluation.scorers.icd_scoring  import score_icd
 from evaluation.scorers.atc_scoring  import score_medication
-from evaluation.scorers.note_scoring import score_note_section
-from env.config_loader import get_config
-
 
 # ------------------------------------------------------------------ #
 # GT-type → vocabulary mapping                                        #
@@ -71,9 +67,10 @@ def _icd_vocab(gt_item: dict) -> str:
     else:
         version = gt_item.get("icd_version", 9)
     if gt_type == "procedure":
-        return "ICD9PROC" if version == 9 else "ICD10PCS"
+        return "ICD9PROC" if version == 9 else "ICD10PROC"
     else:
         return "ICD9CM" if version == 9 else "ICD10CM"
+    
 
 
 # ------------------------------------------------------------------ #
@@ -153,25 +150,41 @@ def _score_pair(gt_item: GTItem, submission: Submission) -> float:
 # ------------------------------------------------------------------ #
 
 def _match(gt_items: list[GTItem], submissions: list[Submission]) -> list[dict]:
-    """Optimal one-to-one matching via Hungarian algorithm."""
+    """Optimal one-to-one matching via per-type Hungarian algorithm.
+
+    Because hint_counts ensures submission counts match GT counts per type,
+    matching is performed independently within each type group
+    (diagnosis / medication / procedure), then results are combined.
+    """
     if not gt_items or not submissions:
         return []
 
-    matrix = np.array(
-        [[_score_pair(g, s) for s in submissions] for g in gt_items],
-        dtype=float,
-    )
-    row_ind, col_ind = linear_sum_assignment(matrix, maximize=True)
+    types = {g.get("type", "") for g in gt_items} | {s.get("type", "") for s in submissions}
+    matches = []
 
-    return [
-        {
-            "gt_item":    gt_items[r],
-            "submission": submissions[c],
-            "score":      float(matrix[r, c]),
-            "method":     "hungarian",
-        }
-        for r, c in zip(row_ind, col_ind)
-    ]
+    for t in types:
+        gt_t  = [g for g in gt_items   if g.get("type", "") == t]
+        sub_t = [s for s in submissions if s.get("type", "") == t]
+        if not gt_t or not sub_t:
+            continue
+
+        matrix = np.array(
+            [[_score_pair(g, s) for s in sub_t] for g in gt_t],
+            dtype=float,
+        )
+        row_ind, col_ind = linear_sum_assignment(matrix, maximize=True)
+
+        matches.extend(
+            {
+                "gt_item":    gt_t[r],
+                "submission": sub_t[c],
+                "score":      float(matrix[r, c]),
+                "method":     "hungarian",
+            }
+            for r, c in zip(row_ind, col_ind)
+        )
+
+    return matches
 
 
 # ------------------------------------------------------------------ #
@@ -190,12 +203,11 @@ def _f1(precision: float, recall: float) -> float:
 def score_stage(stage_log: StageResult) -> dict:
     """Score one stage log. Returns a score dict.
 
-    Precision is continuous (sum of clipped match scores / n_subs).
-    Scores below precision_threshold are treated as 0 for precision only;
-    recall still uses the full continuous partial credit.
+    Precision = sum of matched scores / n_submissions (continuous partial credit).
+    Recall    = sum of matched scores / n_gt          (continuous partial credit).
     """
     submissions = stage_log.get("submissions", [])
-    gt          = stage_log.get("gts", [])
+    gt          = [g for g in stage_log.get("gts", []) if not g.get("unscoreable")]
 
     if not gt:
         return {"total": 0, "hits": 0.0, "recall": 0.0,
@@ -203,44 +215,19 @@ def score_stage(stage_log: StageResult) -> dict:
 
     matches = _match(gt, submissions)
 
-    # ── Recall: weighted partial credit ──────────────────────────────
-    eval_conf = get_config("eval")
-    weights   = eval_conf.get("weights", {})
-    W_PRIMARY   = weights.get("primary",   1.0)
-    W_SECONDARY = weights.get("secondary", 0.8)
-
+    # ── Recall ───────────────────────────────────────────────────────
     gt_scores = {id(g): 0.0 for g in gt}
     for m in matches:
         gt_scores[id(m["gt_item"])] = m["score"]
 
-    weighted_score       = 0.0
-    total_primary_weight = 0.0
-    for g in gt:
-        is_primary = g.get("primary", True)
-        weight     = W_PRIMARY if is_primary else W_SECONDARY
-        weighted_score += gt_scores[id(g)] * weight
-        if is_primary:
-            total_primary_weight += W_PRIMARY
+    recall = min(1.0, sum(gt_scores.values()) / len(gt))
 
-    if total_primary_weight == 0:
-        total_primary_weight = len(gt) * W_PRIMARY
-        weighted_score = sum(gt_scores.values()) * W_PRIMARY
-
-    recall = min(1.0, weighted_score / total_primary_weight)
-
-    # ── Precision: continuous with threshold floor ────────────────────
-    med_conf  = eval_conf.get("outcome_scorers", {}).get("medication_atc", {})
-    threshold = med_conf.get("precision_threshold", 0.3)
-
-    sub_score_map: dict[int, float] = {id(s): 0.0 for s in submissions}
+    # ── Precision ────────────────────────────────────────────────────
+    sub_scores = {id(s): 0.0 for s in submissions}
     for m in matches:
-        sub_score_map[id(m["submission"])] = m["score"]
+        sub_scores[id(m["submission"])] = m["score"]
 
-    clipped_sum = sum(
-        s if s >= threshold else 0.0
-        for s in sub_score_map.values()
-    )
-    precision = clipped_sum / len(submissions) if submissions else 0.0
+    precision = sum(sub_scores.values()) / len(submissions) if submissions else 0.0
 
     f1 = _f1(precision, recall)
 
@@ -256,11 +243,3 @@ def score_stage(stage_log: StageResult) -> dict:
     }
 
 
-def score_episode(episode_log: dict) -> dict:
-    """Score all stages of an episode log."""
-    scored_stages = []
-    for stage in episode_log.get("stages", []):
-        score = score_stage(stage)
-        scored_stages.append({**stage, "score": score})
-
-    return {**episode_log, "stages": scored_stages}

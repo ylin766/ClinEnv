@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from pyhealth.medcode import InnerMap
 
-from evaluation.scorers._openai_utils import get_client, get_model
+from evaluation.scorers._openai_utils import get_client, get_embedding_client, get_embed_model, get_model
 
 # ------------------------------------------------------------------ #
 # Configuration                                                        #
@@ -26,10 +26,10 @@ from evaluation.scorers._openai_utils import get_client, get_model
 
 _CACHE_DIR   = Path(__file__).parent.parent / "cache"
 _PROMPT_FILE = Path(__file__).parent.parent.parent / "prompts" / "scoring" / "icd_reranker.txt"
-_EMBED_MODEL = "text-embedding-3-small"
 _TOPK        = 15
 
 _icd_vocab_cache: dict[str, InnerMap] = {}
+_index_mem_cache: dict[str, tuple[list, np.ndarray]] = {}
 
 
 def _vocab(name: str) -> InnerMap:
@@ -57,21 +57,36 @@ def _normalize(code: str, vocab: str) -> str:
 # ------------------------------------------------------------------ #
 
 def _embed(texts: list[str]) -> np.ndarray:
+    import time
+    from openai import APIConnectionError, APITimeoutError, RateLimitError
     from evaluation.scorers._usage import usage
-    resp = get_client().embeddings.create(model=_EMBED_MODEL, input=texts)
-    if hasattr(resp, "usage") and resp.usage:
-        usage.track("icd_embedding", prompt_tokens=resp.usage.prompt_tokens)
-    return np.array([r.embedding for r in resp.data], dtype=np.float32)
+    from evaluation.scorers._openai_utils import get_embedding_client
+    
+    attempt = 0
+    while True:
+        try:
+            resp = get_embedding_client().embeddings.create(model=get_embed_model(), input=texts)
+            if hasattr(resp, "usage") and resp.usage:
+                usage.track("icd_embedding", prompt_tokens=resp.usage.prompt_tokens)
+            return np.array([r.embedding for r in resp.data], dtype=np.float32)
+        except (APIConnectionError, APITimeoutError, RateLimitError):
+            attempt += 1
+            time.sleep(min(2 ** min(attempt, 6), 60))
 
 
 def _load_index(vocab: str) -> tuple[list[str], np.ndarray]:
     """Load (or build and cache) the L2-normalised embedding index for a vocabulary."""
+    if vocab in _index_mem_cache:
+        return _index_mem_cache[vocab]
+
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = _CACHE_DIR / f"{vocab}_index.pkl"
 
     if cache.exists():
         with open(cache, "rb") as f:
-            return pickle.load(f)
+            result = pickle.load(f)
+        _index_mem_cache[vocab] = result
+        return result
 
     print(f"  [icd_scoring] Building index for {vocab} (one-time setup)...")
     icd = _vocab(vocab)
@@ -83,8 +98,10 @@ def _load_index(vocab: str) -> tuple[list[str], np.ndarray]:
             descs.append(desc)
 
     embs = []
-    for i in range(0, len(descs), 256):
-        embs.append(_embed(descs[i : i + 256]))
+    batch_size = 2000
+    for i in range(0, len(descs), batch_size):
+        print(f"  [icd_scoring] Embedding progress: {i}/{len(descs)} codes")
+        embs.append(_embed(descs[i : i + batch_size]))
         time.sleep(0.1)
 
     embeddings = np.vstack(embs)
@@ -114,33 +131,45 @@ def _retrieve(text: str, vocab: str) -> list[tuple[str, str, float]]:
 
 
 def _rerank(text: str, candidates: list[tuple[str, str, float]]) -> str:
-    """LLM selects the best ICD code from embedding-retrieved candidates."""
+    """LLM selects the best ICD code from embedding-retrieved candidates.
+
+    Retries indefinitely on API/connection errors.
+    Falls back to top-1 only on JSON parse errors (legitimate LLM output issue).
+    """
+    import time as _time
+    from openai import APIConnectionError, APITimeoutError, RateLimitError
     system_prompt = _PROMPT_FILE.read_text(encoding="utf-8").strip()
     candidate_lines = "\n".join(
         f"{i+1}. [{code}] {desc}" for i, (code, desc, _) in enumerate(candidates)
     )
     user_msg = f'Clinical text: "{text}"\n\nCandidates:\n{candidate_lines}'
 
-    try:
-        from evaluation.scorers._usage import usage
-        resp = get_client().chat.completions.create(
-            model=get_model(),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_msg},
-            ],
-            temperature=0,
-            max_completion_tokens=20,
-        )
-        if hasattr(resp, "usage") and resp.usage:
-            usage.track("icd_reranker",
-                        prompt_tokens=resp.usage.prompt_tokens,
-                        completion_tokens=resp.usage.completion_tokens)
-        data = json.loads(resp.choices[0].message.content.strip())
-        idx = max(0, min(int(data["selected"]) - 1, len(candidates) - 1))
-        return candidates[idx][0]
-    except Exception:
-        return candidates[0][0]  # fallback: top-1 by embedding similarity
+    from evaluation.scorers._usage import usage
+    attempt = 0
+    while True:
+        try:
+            resp = get_client().chat.completions.create(
+                model=get_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_msg},
+                ],
+                temperature=0,
+                max_completion_tokens=200,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                usage.track("icd_reranker",
+                            prompt_tokens=resp.usage.prompt_tokens,
+                            completion_tokens=resp.usage.completion_tokens)
+            data = json.loads(resp.choices[0].message.content.strip())
+            idx = max(0, min(int(data["selected"]) - 1, len(candidates) - 1))
+            return candidates[idx][0]
+        except (APIConnectionError, APITimeoutError, RateLimitError):
+            attempt += 1
+            _time.sleep(min(2 ** min(attempt, 6), 60))
+        except Exception:
+            # JSON parse error or unexpected LLM output — fallback to top-1
+            return candidates[0][0]
 
 
 # ------------------------------------------------------------------ #
@@ -181,12 +210,10 @@ def score_icd(submitted_text: str, gt_code: str, vocab: str) -> float:
 
     Pipeline: text → embedding retrieval → LLM reranking → HDF1 vs GT.
     Returns a float in [0, 1].
+    API/connection errors propagate up; only legitimate "no match" cases return 0.
     """
-    try:
-        candidates = _retrieve(submitted_text, vocab)
-        if not candidates:
-            return 0.0
-        pred_code = _rerank(submitted_text, candidates)
-        return hierarchical_f1(pred_code, _normalize(gt_code, vocab), vocab)
-    except Exception:
+    candidates = _retrieve(submitted_text, vocab)
+    if not candidates:
         return 0.0
+    pred_code = _rerank(submitted_text, candidates)
+    return hierarchical_f1(pred_code, _normalize(gt_code, vocab), vocab)

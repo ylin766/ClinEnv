@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -59,8 +60,6 @@ def process_one(subject_id: str, hadm_id: str, verbose: bool = True, model: str 
                 if "drug" in g:
                     g["drug_name"] = g.pop("drug")
             
-            # Filter out 'plan' type which is no longer supported in the core pipeline
-            s["gts"] = [g for g in s.get("gts", []) if g.get("type") != "plan"]
     else:
         planner_out = plan_decision_points(record, verbose=verbose, model=model)
         stages = planner_out["stages"]
@@ -136,19 +135,31 @@ def main() -> int:
         if args.limit:
             records = records[:args.limit]
 
-        print(f"Processing {len(records)} cases from {manifest.name}")
-        for i, rec in enumerate(records, 1):
-            sid, hid = rec["subject_id"], rec["hadm_id"]
-            print(f"\n[{i}/{len(records)}] {sid}/{hid}")
-            try:
-                process_one(sid, hid, verbose=verbose, model=args.model, reuse_plan=args.reuse_plan)
-            except Exception as e:
-                msg = f"FAILED {sid}/{hid}: {e}"
-                print(msg, file=sys.stderr)
-                errors.append(msg)
-                continue
+        from env.config_loader import get_config
+        concurrency = get_config("planner").get("concurrency", 8)
+        total = len(records)
+        print(f"Processing {total} cases from {manifest.name} (concurrency={concurrency})")
 
-        print(f"\nDone. {len(records) - len(errors)}/{len(records)} succeeded.")
+        def _run_one(args_tuple):
+            idx, rec = args_tuple
+            sid, hid = rec["subject_id"], rec["hadm_id"]
+            print(f"[{idx}/{total}] {sid}/{hid}")
+            process_one(sid, hid, verbose=verbose, model=args.model, reuse_plan=args.reuse_plan)
+            return sid, hid, None
+
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(_run_one, (i, rec)): rec for i, rec in enumerate(records, 1)}
+            for fut in as_completed(futures):
+                rec = futures[fut]
+                sid, hid = rec["subject_id"], rec["hadm_id"]
+                try:
+                    fut.result()
+                except Exception as e:
+                    msg = f"FAILED {sid}/{hid}: {e}"
+                    print(msg, file=sys.stderr)
+                    errors.append(msg)
+
+        print(f"\nDone. {total - len(errors)}/{total} succeeded.")
         if errors:
             print(f"{len(errors)} failures:")
             for e in errors:

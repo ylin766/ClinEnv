@@ -24,7 +24,7 @@ _TABLE_SUMMARY: dict[str, list[str]] = {
     "hosp_emar_detail_df":      ["medication", "administration_type", "event_txt", "event_time"],
     "radiology_note":           ["text"],
     "hosp_procedures_icd_df":   ["long_title_procedure", "icd_code", "event_time"],
-    "hosp_pharmacy_df":         ["medication", "status", "route", "event_time"],
+    "hosp_pharmacy_df":         ["medication", "route", "event_time"],
     "hosp_prescriptions_df":    ["drug", "dose_val_rx", "dose_unit_rx", "route", "frequency", "event_time"],
 }
 
@@ -43,7 +43,7 @@ def _format_events(events: list[dict]) -> str:
                 continue
             # truncate long text fields (e.g. radiology reports) to keep context manageable
             s = str(val)
-            parts.append(s[:400] + "…" if len(s) > 400 else s)
+            parts.append(s)
         time   = ev.get("event_time", "")
         prefix = f"[{time}] " if time else ""
         lines.append(prefix + " | ".join(parts))
@@ -61,7 +61,9 @@ def answer(readview: dict, query: str, client: OpenAI, model: str) -> str:
             {"role": "system", "content": f"{system}\n\n---\nBedside Data:\n{events_ctx}"},
             {"role": "user",   "content": query},
         ],
-        temperature=0.3,
+        temperature=0,
         max_completion_tokens=400,
     )
-    return resp.choices[0].message.content.strip()
+    msg = resp.choices[0].message
+    text = msg.content or getattr(msg, "reasoning_content", None) or ""
+    return text.strip()

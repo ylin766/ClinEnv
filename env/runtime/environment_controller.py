@@ -13,6 +13,7 @@ Scoring is NOT done here — it is the responsibility of the evaluation/ module.
 from __future__ import annotations
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -198,15 +199,17 @@ def _gt_summary(gt: list[dict]) -> str:
     """Format a stage's GT as confirmed clinical facts for the next stage's context."""
     lines = []
     for item in gt:
-        src = item.get("source", "")
-        if src == "icd_diagnosis":
-            lines.append(f"- Diagnosis confirmed: {item.get('display', item.get('icd_code', ''))}")
-        elif src == "icd_procedure":
-            lines.append(f"- Procedure performed: {item.get('display', item.get('icd_code', ''))}")
-        elif src == "medication":
-            lines.append(f"- Medication decision: {item.get('drug', '')}")
-        elif src == "note_section":
-            lines.append(f"- Clinical decision: {item.get('span', '')}")
+        t = item.get("type", "")
+        if t == "diagnosis":
+            desc = item.get("description", item.get("icd_code", ""))
+            lines.append(f"- Diagnosis confirmed: {desc}")
+        elif t == "procedure":
+            desc = item.get("description", item.get("icd_code", ""))
+            lines.append(f"- Procedure performed: {desc}")
+        elif t == "medication":
+            action = item.get("action", "start")
+            drug   = item.get("drug_name", "")
+            lines.append(f"- Medication decision ({action}): {drug}")
     return "\n".join(lines) if lines else "(no structured decisions)"
 
 
@@ -320,9 +323,6 @@ def _build_fake_submit_messages(gt: list[dict], label: str) -> list[dict]:
             args["diagnosis"] = desc
         elif t_type == "procedure":
             args["procedure"] = item.get("description", "")
-        elif t_type == "plan":
-            args["plan"] = item.get("description", item.get("span", ""))
-            
         tc_id = f"call_{uuid.uuid4().hex[:10]}"
         messages.append({
             "role": "assistant",
@@ -461,9 +461,8 @@ def _build_conversation(messages: list[dict], start: int = 0) -> list[dict]:
 # ------------------------------------------------------------------ #
 
 def _patch_gptoss_tool_calls(resp, tools: list):
-    """gpt-oss via vLLM puts tool arguments in content and leaves tool_calls=[].
-    Extract tool name from reasoning, arguments from content, and return a
-    dict-based fake response so no OpenAI model_dump serialization is needed.
+    """Parses tool calls from vLLM model responses.
+    Handles standard tool_calls, raw JSON in content, and the unified [call/arguments] format.
     """
     import uuid as _uuid
     if not resp or not resp.choices:
@@ -471,52 +470,66 @@ def _patch_gptoss_tool_calls(resp, tools: list):
     msg = resp.choices[0].message
     tcs = getattr(msg, "tool_calls", None) or []
     if tcs:
-        return resp  # already correct format
+        return resp
 
     content   = getattr(msg, "content", "") or ""
     reasoning = getattr(msg, "reasoning", "") or getattr(msg, "reasoning_content", "") or ""
 
-    # Try to parse content as JSON arguments
-    try:
-        args_dict = json.loads(content)
-    except Exception:
-        return resp  # not JSON, leave as-is
+    # Try to find and parse a JSON block in the content
+    matched_json = re.search(r'\{.*\}', content, re.DOTALL)
+    data = None
+    if matched_json:
+        try:
+            data = json.loads(matched_json.group())
+        except Exception:
+            pass
 
-    # Extract tool name from reasoning (e.g. "call the ask_nurse tool")
-    tool_names = [t["function"]["name"] for t in tools]
     matched = None
-    for name in tool_names:
-        if name in reasoning:
-            matched = name
-            break
+    args_dict = {}
 
-    # Fallback: match by unique argument keys
-    if not matched:
-        arg_keys = set(args_dict.keys())
-        for t in tools:
-            sig_keys = set(t["function"].get("parameters", {}).get("properties", {}).keys())
-            if sig_keys and arg_keys == sig_keys:
-                matched = t["function"]["name"]
+    # Case 1: Unified format {"call": "tool_name", "arguments": {...}}
+    if data and isinstance(data, dict) and "call" in data:
+        matched = data["call"]
+        args_dict = data.get("arguments", {})
+    # Case 2: Raw arguments dict
+    elif data and isinstance(data, dict):
+        args_dict = data
+        tool_names = [t["function"]["name"] for t in tools]
+        for name in tool_names:
+            if name in reasoning:
+                matched = name
                 break
-        # finalize_decision / get_history_summary take no args
-        if not matched and not arg_keys:
-            for name in ["finalize_decision", "get_history_summary"]:
-                if name in tool_names:
-                    matched = name
+        if not matched:
+            arg_keys = set(args_dict.keys())
+            for t in tools:
+                sig_keys = set(t["function"].get("parameters", {}).get("properties", {}).keys())
+                if sig_keys and arg_keys == sig_keys:
+                    matched = t["function"]["name"]
                     break
+    # Case 3: Standalone tool name in content (e.g., Gemma outputting just "ask_nurse")
+    if not matched:
+        tool_names = [t["function"]["name"] for t in tools]
+        # Check for standalone tool names in the content (strip punctuation)
+        clean_content = re.sub(r'[^\w\s]', ' ', content).split()
+        for word in clean_content:
+            if word in tool_names:
+                matched = word
+                # If it's a standalone name, arguments are likely empty or embedded elsewhere
+                # We'll assume empty for now as most information gathering tools take 'query'
+                # but Gemma often fails to provide the JSON part.
+                break
 
     if not matched:
-        return resp  # can't determine tool, leave content as-is
+        return resp
 
-    # Return a dict-based message (skips model_dump entirely downstream)
-    tc_id   = f"call_{_uuid.uuid4().hex[:8]}"
+    tc_id = f"call_{_uuid.uuid4().hex[:8]}"
     msg_dict = {
         "role":       "assistant",
         "content":    None,
         "tool_calls": [{
             "id":       tc_id,
             "type":     "function",
-            "function": {"name": matched, "arguments": json.dumps(args_dict)},
+            "function": {"name": matched, "arguments": json.dumps(args_dict, ensure_ascii=False)},
         }],
     }
 
@@ -526,16 +539,12 @@ def _patch_gptoss_tool_calls(resp, tools: list):
         message = FakeMsg()
     class FakeResp:
         choices = [FakeChoice()]
-
     return FakeResp()
 
 
 def _normalize_messages_for_vllm(messages: list) -> list:
-    """Normalize messages for strict user/assistant alternation models (e.g. Gemma via vLLM).
-
-    - tool role → user role (content wrapped with <tool_response> tags)
-    - assistant messages: tool_calls converted to text, tool_calls field stripped
-    - consecutive same-role messages merged (excluding system)
+    """Normalize messages for small models requiring strict user/assistant alternation.
+    Encodes assistant tool calls as structured JSON to ensure teaching consistency.
     """
     normalized = []
     for msg in messages:
@@ -552,12 +561,21 @@ def _normalize_messages_for_vllm(messages: list) -> list:
                 parts.append(m["content"])
             for tc in (m.get("tool_calls") or []):
                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                parts.append(f"[Calling {fn.get('name', '')}({fn.get('arguments', '')})]")
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except Exception:
+                    args = fn.get("arguments")
+                
+                # Use a unified JSON format for history to teach the model how to respond
+                call_info = {
+                    "call": fn.get("name", ""),
+                    "arguments": args
+                }
+                parts.append(json.dumps(call_info, ensure_ascii=False))
             new_msg = {"role": "assistant", "content": "\n".join(parts) if parts else ""}
         else:
             new_msg = {"role": role, "content": m.get("content") or ""}
 
-        # Merge consecutive same-role messages (excluding system)
         if normalized and normalized[-1]["role"] == role and role != "system":
             normalized[-1]["content"] += "\n\n" + new_msg["content"]
         else:
@@ -798,18 +816,18 @@ def run_stage(
             if not _has_new_events(rv.get("nurse", {}).get("events", [])):
                 available_agents.remove("nurse")
                 if verbose:
-                    print("  [env] no nurse events in current stage window — nurse suppressed")
+                    print("  [env] no nurse events in current stage window — nurse suppressed", flush=True)
 
         if "lab" in available_agents:
             if not _has_new_events(rv.get("lab", {}).get("events", [])):
                 available_agents.remove("lab")
                 if verbose:
-                    print("  [env] no lab events in current stage window — lab suppressed")
+                    print("  [env] no lab events in current stage window — lab suppressed", flush=True)
 
         if "patient" in available_agents and prior_stage_logs:
             available_agents.remove("patient")
             if verbose:
-                print("  [env] patient readview is static — patient suppressed after stage 0")
+                print("  [env] patient readview is static — patient suppressed after stage 0", flush=True)
 
     tools = (
         get_submit_tools(required_types) if mode == "direct"
@@ -817,9 +835,10 @@ def run_stage(
                                    required_types=required_types)
     )
 
+    from env.llm_client import get_model_name
     ctx = {
         "client":           client,
-        "model":            os.getenv("ENV_MODEL", _DEFAULT_MODEL),
+        "model":            get_model_name(is_env=True),
         "prior_admissions": prior_admissions,
     }
 
@@ -839,10 +858,10 @@ def run_stage(
 
     # Interactive: inject trigger agent's opening message
     if mode == "interactive":
-        trigger_text = _call_trigger(stage, client, os.getenv("ENV_MODEL", _DEFAULT_MODEL))
+        trigger_text = _call_trigger(stage, client, get_model_name(is_env=True))
         if trigger_text:
             if verbose:
-                print(f"  [trigger] {trigger_text[:200]}")
+                print(f"  [trigger] {trigger_text[:200]}", flush=True)
             messages.append({"role": "user", "content": trigger_text})
 
     submissions: list[dict] = []
@@ -876,11 +895,11 @@ def run_stage(
 
         if verbose and msg_content:
             preview = msg_content[:300]
-            print(f"  [model] {preview}{'...' if len(msg_content) > 300 else ''}")
+            print(f"  [model] {preview}{'...' if len(msg_content) > 300 else ''}", flush=True)
 
         if not msg_tcs:
             if verbose:
-                print("  [env] No tool call — prompting to submit and finalize.")
+                print("  [env] No tool call — prompting to submit and finalize.", flush=True)
             messages.append({
                 "role":    "user",
                 "content": (
@@ -901,13 +920,13 @@ def run_stage(
                 tc_id = tc.id
 
             if verbose:
-                print(f"  [tool] {name}({json.dumps(args) if args else ''})")
+                print(f"  [tool] {name}({json.dumps(args) if args else ''})", flush=True)
 
             result = dispatch(name, args, stage, ctx=ctx)
 
             if verbose:
                 preview = json.dumps(result, default=str)
-                print(f"         → {preview[:200]}{'...' if len(preview) > 200 else ''}")
+                print(f"         → {preview[:200]}{'...' if len(preview) > 200 else ''}", flush=True)
 
             if name in SUBMIT_TOOLS and result.get("status") == "recorded":
                 duplicate = any(
@@ -925,7 +944,7 @@ def run_stage(
                         remaining = {t: c for t, c in required_counts.items() if c > 0}
                         result = {**result, "remaining": remaining if remaining else "all done"}
                 elif verbose:
-                    print(f"  [env] duplicate submission ignored: {result.get('type')} '{result.get('value')[:60]}'...")
+                    print(f"  [env] duplicate submission ignored: {result.get('type')} '{result.get('value')[:60]}'...", flush=True)
 
             if name == FINALIZE_TOOL:
                 missing = required_types - {s["type"] for s in submissions}
@@ -938,7 +957,7 @@ def run_stage(
                         ),
                     }
                     if verbose:
-                        print(f"  [env] finalize rejected: missing {missing}")
+                        print(f"  [env] finalize rejected: missing {missing}", flush=True)
                 else:
                     finalized = True
 
@@ -976,7 +995,7 @@ def run_episode(
 ) -> dict:
     """Run all stages of a prepared case. Returns the raw episode log (no scores).
 
-    To score the result, pass the returned dict to evaluation.scorer.score_episode().
+    To score the result, pass the returned dict to evaluation.scorer.score_stage().
     """
     # env client: always uses regular OpenAI (patient/nurse/lab agents)
     client  = get_openai_client(is_env=True)
@@ -985,9 +1004,8 @@ def run_episode(
     if "claude" in mut_model.lower():
         mut_client = get_anthropic_client()
     else:
-        # mut_client uses vLLM if enabled in runtime config, else same as env client
-        from env.config_loader import is_vllm_enabled
-        mut_client = get_openai_client(is_env=False) if is_vllm_enabled("runtime") else client
+        # Get independent client for mut, which reads 'api' block or vllm config
+        mut_client = get_openai_client(is_env=False)
 
     if model:
         os.environ["MUT_MODEL"] = mut_model
@@ -998,7 +1016,7 @@ def run_episode(
 
     for i, stage in enumerate(stages, 1):
         if verbose:
-            print(f"\n{'='*60}\nSTAGE {i}/{len(stages)}: {stage.get('label', '')}\n{'='*60}")
+            print(f"\n{'='*60}\nSTAGE {i}/{len(stages)}: {stage.get('label', '')}\n{'='*60}", flush=True)
         log = run_stage(
             client,
             mut_client,

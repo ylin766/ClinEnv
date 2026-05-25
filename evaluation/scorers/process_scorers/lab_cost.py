@@ -13,13 +13,12 @@ import numpy as np
 
 from env.config_loader import get_config
 from env.llm_client import chat_complete
-from evaluation.scorers._openai_utils import get_client, get_model
+from evaluation.scorers._openai_utils import get_client, get_embedding_client, get_embed_model, get_model
 from evaluation.scorers.process_scorers._dialogue import parse_tool_messages
 
 _CLFS_PATH    = Path(__file__).parent.parent.parent.parent / "data" / "clfs_cy2026.csv"
 _PROMPT       = Path(__file__).parent.parent.parent.parent / "prompts" / "scoring" / "lab_fee_reranker.txt"
 _EMB_CACHE    = Path(__file__).parent.parent.parent / "cache" / "clfs_fee_index.pkl"
-_EMBED_MODEL  = "text-embedding-3-small"
 _TOPK         = 15
 
 _fee_index_cache: tuple | None = None
@@ -67,7 +66,7 @@ def _build_index(entries: list[dict]) -> tuple:
     texts = [e["text"] for e in entries]
     embs  = []
     for i in range(0, len(texts), 256):
-        resp = get_client().embeddings.create(model=_EMBED_MODEL, input=texts[i : i + 256])
+        resp = get_embedding_client().embeddings.create(model=get_embed_model(), input=texts[i : i + 256])
         embs.append(np.array([r.embedding for r in resp.data], dtype=np.float32))
     embeddings = np.vstack(embs)
     embeddings /= np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-8)
@@ -105,25 +104,38 @@ def _rerank(test_name: str, candidates: list[dict]) -> dict | None:
 
 
 def _lookup_fee(test_name: str, fee_schedule: list[dict]) -> float:
-    """Map a lab test name → USD via embedding retrieval + LLM rerank."""
+    """Map a lab test name → USD via embedding retrieval + LLM rerank.
+
+    Retries indefinitely on API errors (rate limit, timeout, network).
+    Returns 0.0 only when no matching CLFS code is found (legitimate case).
+    """
+    import time
     global _fee_index_cache
     if not test_name or not fee_schedule:
         return 0.0
-    try:
-        if _fee_index_cache is None:
-            _fee_index_cache = _build_index(fee_schedule)
-        idx_entries, embs = _fee_index_cache
 
-        q_resp = get_client().embeddings.create(model=_EMBED_MODEL, input=[test_name])
-        q      = np.array(q_resp.data[0].embedding, dtype=np.float32)
-        q     /= max(float(np.linalg.norm(q)), 1e-8)
+    if _fee_index_cache is None:
+        _fee_index_cache = _build_index(fee_schedule)
+    idx_entries, embs = _fee_index_cache
 
-        top_idx    = list(map(int, np.argsort(embs @ q)[::-1][:_TOPK]))
-        candidates = [idx_entries[i] for i in top_idx]
-        selected   = _rerank(test_name, candidates)
-        return selected["fee"] if selected else 0.0
-    except Exception:
-        return 0.0
+    # Retry loop for API calls
+    retry_count = 0
+    while True:
+        try:
+            q_resp = get_embedding_client().embeddings.create(model=get_embed_model(), input=[test_name])
+            q      = np.array(q_resp.data[0].embedding, dtype=np.float32)
+            q     /= max(float(np.linalg.norm(q)), 1e-8)
+
+            top_idx    = list(map(int, np.argsort(embs @ q)[::-1][:_TOPK]))
+            candidates = [idx_entries[i] for i in top_idx]
+            selected   = _rerank(test_name, candidates)
+            # Return 0.0 only if no match found (legitimate case)
+            return selected["fee"] if selected else 0.0
+        except Exception as e:
+            # Retry on any error (rate limit, timeout, network, etc.)
+            retry_count += 1
+            wait_time = min(2 ** min(retry_count, 6), 60)  # Exponential backoff, max 60s
+            time.sleep(wait_time)
 
 
 def _lab_name_from_not_found(message: str) -> str:

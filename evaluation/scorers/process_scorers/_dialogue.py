@@ -25,11 +25,11 @@ def tool_name_from_result(parsed: dict) -> str:
     if "_speaker" in parsed:
         return f"ask_{parsed['_speaker']}"
     if "found" in parsed and "results" in parsed:
-        return "query_lab"
+        return "order_lab"
     if "count" in parsed and "admissions" in parsed:
-        return "get_prior_admissions"
+        return "get_history_summary"
     if "hadm_id" in parsed and "full_note" in parsed:
-        return "get_prior_note"
+        return "get_history_detail"
     if parsed.get("status") in ("recorded", "finalized"):
         return "submit"
     return "unknown"

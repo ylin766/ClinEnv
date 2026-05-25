@@ -9,16 +9,16 @@ Step 1 — assign type:
 - medication: the decision is about ordering, stopping, or switching a drug
 - procedure: a procedural or surgical intervention performed on the patient
 - diagnosis: the physician establishes or confirms a specific clinical diagnosis that drives subsequent management
-- plan: any other attending-level management decision not covered above
 
 Step 2 — if type is medication, assign action:
-- start: a drug is newly ordered
+- start: a drug is newly ordered for the first time
 - stop: a drug is held, withheld, or discontinued
+- adjust: the dose, frequency, or route of the same drug is changed
 - switch: one drug is replaced by a different drug
 
-Action must be one of start, stop, or switch when type is medication. Never null.
+Action must be one of start, stop, adjust, or switch when type is medication. Never null.
 
 Output JSON only:
-{{"type": "medication"|"procedure"|"diagnosis"|"plan", "action": "start"|"stop"|"switch"|null}}
+{{"type": "medication"|"procedure"|"diagnosis", "action": "start"|"stop"|"adjust"|"switch"|null}}
 
 Set action to null only if type is not medication.

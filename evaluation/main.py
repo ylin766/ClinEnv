@@ -29,7 +29,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
 from env.config_loader import get_config
 from evaluation.scorer import score_stage
-from evaluation.scorers._usage import usage as _usage
+from evaluation.scorers._usage import usage as _usage, progress as _progress
 from evaluation.scorers.process_scorers import score_process
 
 _CASES_DIR = Path(__file__).parent.parent / "data" / "cases"
@@ -93,12 +93,12 @@ def evaluate_one(
 
     _usage.reset()
 
-    scored_stages = []
-    for i, out_stage in enumerate(output.get("stages", [])):
+    out_stages_list = output.get("stages", [])
+    diag_stages     = (dialogue or {}).get("stages", [])
+    case_stages     = (case     or {}).get("stages", [])
 
-        # ── Outcome scoring ───────────────────────────────────────────
+    def _score_one_stage(i: int, out_stage: dict) -> dict:
         outcome = score_stage(out_stage)
-
         stage_result: dict = {
             "stage_idx":     i,
             "label":         out_stage.get("label", f"stage_{i}"),
@@ -112,18 +112,22 @@ def evaluate_one(
                 "matches":   outcome["matches"],
             },
         }
-
-        # ── Process scoring (optional) ────────────────────────────────
         if run_process and dialogue and case:
-            diag_stages = dialogue.get("stages", [])
-            case_stages = case.get("stages",    [])
-            diag_stage  = diag_stages[i] if i < len(diag_stages) else {}
-            case_stage  = case_stages[i]  if i < len(case_stages)  else {}
-            process     = score_process(diag_stage, case_stage, proc_conf)
+            diag_stage = diag_stages[i] if i < len(diag_stages) else {}
+            case_stage = case_stages[i] if i < len(case_stages) else {}
+            process    = score_process(diag_stage, case_stage, proc_conf)
             if process:
                 stage_result["process_score"] = process
+        return stage_result
 
-        scored_stages.append(stage_result)
+    scored_stages: list[dict] = [None] * len(out_stages_list)  # type: ignore[list-item]
+    if out_stages_list:
+        with ThreadPoolExecutor(max_workers=len(out_stages_list)) as stage_pool:
+            futs = {stage_pool.submit(_score_one_stage, i, s): i
+                    for i, s in enumerate(out_stages_list)}
+            for fut in as_completed(futs):
+                idx = futs[fut]
+                scored_stages[idx] = fut.result()
 
     # ── Build eval record ─────────────────────────────────────────────
     eval_at = datetime.now(timezone.utc).isoformat()
@@ -161,7 +165,7 @@ def evaluate_one(
                 lc      = proc["lab_cost"]
                 wasted  = lc.get("wasted_ratio")
                 w_str   = f"{wasted:.3f}" if wasted is not None else "null"
-                line   += f"  lab_waste={w_str}  lab_eff={proc.get('lab_efficiency', 0):.3f}"
+                line   += f"  lab_waste={w_str}"
             print(line)
         u = eval_record["usage"]
         if u["total_tokens"] > 0:
@@ -176,7 +180,8 @@ def evaluate_one(
 # Batch helpers                                                        #
 # ------------------------------------------------------------------ #
 
-def _cases_from_manifest(manifest_path: Path) -> list[tuple[str, str]]:
+def _cases_from_manifest(manifest_path: Path) -> list[tuple[str, str, str | None]]:
+    """Returns list of (subject_id, hadm_id, model_name_or_none)."""
     cases = []
     with open(manifest_path, encoding="utf-8") as f:
         for line in f:
@@ -184,18 +189,20 @@ def _cases_from_manifest(manifest_path: Path) -> list[tuple[str, str]]:
             if not line:
                 continue
             obj = json.loads(line)
-            cases.append((str(obj["subject_id"]), str(obj["hadm_id"])))
+            model_name = obj.get("model")  # may be None
+            cases.append((str(obj["subject_id"]), str(obj["hadm_id"]), model_name))
     return cases
 
 
-def _cases_from_dir() -> list[tuple[str, str]]:
+def _cases_from_dir() -> list[tuple[str, str, None]]:
+    """Returns list of (subject_id, hadm_id, None)."""
     pairs = []
     for subj in sorted(_CASES_DIR.iterdir()):
         if not subj.is_dir():
             continue
         for hadm in sorted(subj.iterdir()):
             if hadm.is_dir() and (hadm / "case" / "case.json").exists():
-                pairs.append((subj.name, hadm.name))
+                pairs.append((subj.name, hadm.name, None))
     return pairs
 
 
@@ -231,7 +238,7 @@ def main() -> int:
         if not args.hadm_id:
             print("--hadm-id required with --subject-id", file=sys.stderr)
             return 1
-        cases = [(args.subject_id, args.hadm_id)]
+        cases = [(args.subject_id, args.hadm_id, None)]
     elif args.manifest:
         cases = _cases_from_manifest(Path(args.manifest))
     else:
@@ -240,9 +247,11 @@ def main() -> int:
     # Build work list: (subject_id, hadm_id, model_name)
     work = []
     n_skip = 0
-    for subject_id, hadm_id in cases:
+    for subject_id, hadm_id, manifest_model in cases:
         case_dir    = _CASES_DIR / str(subject_id) / str(hadm_id)
-        model_pairs = _model_dirs(case_dir, model)
+        # Use manifest model if specified, otherwise use command-line model
+        effective_model = manifest_model or model
+        model_pairs = _model_dirs(case_dir, effective_model)
         if not model_pairs:
             n_skip += 1
             continue
@@ -267,6 +276,24 @@ def main() -> int:
                 except Exception:
                     pass
             work.append((subject_id, hadm_id, model_name))
+
+    # ── Pre-compute total LLM calls for progress tracking ─────────────
+    if args.process:
+        proc_conf_check = get_config("eval").get("process_scorers", {})
+        if proc_conf_check.get("info_coverage", {}).get("enabled"):
+            n_speakers = len(proc_conf_check["info_coverage"].get("speakers", ["nurse", "patient", "lab"]))
+            total_llm_calls = 0
+            for sid, hid, mname in work:
+                dial_file = _CASES_DIR / sid / hid / "runs" / mname / "dialogue.json"
+                if dial_file.exists():
+                    try:
+                        n_stages = len(json.loads(dial_file.read_text()).get("stages", []))
+                        total_llm_calls += n_stages * n_speakers
+                    except Exception:
+                        pass
+            _progress.reset(total=total_llm_calls)
+            if verbose:
+                print(f"  progress tracking: {total_llm_calls} LLM calls expected")
 
     if verbose:
         print(f"Evaluating {len(work)} case(s)  "

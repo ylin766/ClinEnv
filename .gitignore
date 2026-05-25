@@ -8,3 +8,30 @@ results/
 data/
 mimic-ext-time-series/
 evaluation/cache/
+
+# Benchmark output and temp files
+.venv_temp/
+.claude/
+logs/
+scratch/
+results_plots/
+final_benchmark_dataset/
+dialogue/
+
+# Case study artifacts and notebook
+*.zip
+*.pdf
+*.png
+*.tex
+case_study_*.json
+Benchmark_Figures.ipynb
+sync.txt
+
+# Local model-specific configs (only ship canonical references)
+config/*.json
+!config/eval.json
+!config/runtime.json
+!config/planner.json
+
+# Utility/one-off scripts kept local
+scripts/

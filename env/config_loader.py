@@ -6,7 +6,9 @@ _CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 def get_config(name: str) -> dict:
     """Load config from JSON file."""
-    if name == "runtime" and os.environ.get("BENCHMARK_RUNTIME_CONFIG"):
+    if name == "eval" and os.environ.get("BENCHMARK_EVAL_CONFIG"):
+        config_path = Path(os.environ["BENCHMARK_EVAL_CONFIG"])
+    elif name == "runtime" and os.environ.get("BENCHMARK_RUNTIME_CONFIG"):
         config_path = Path(os.environ["BENCHMARK_RUNTIME_CONFIG"])
     else:
         config_path = _CONFIG_DIR / f"{name}.json"

@@ -129,7 +129,7 @@ def call_llm(client, messages: list, tools=None, model: str = DEFAULT_MODEL):
 
             else:
                 # client is expected to be an openai.OpenAI() instance
-                kwargs = dict(model=model, messages=messages, temperature=0)
+                kwargs = dict(model=model, messages=messages, temperature=0, timeout=45.0)
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
@@ -137,9 +137,9 @@ def call_llm(client, messages: list, tools=None, model: str = DEFAULT_MODEL):
 
         except Exception as e:
             err_str = str(e).lower()
-            if "rate_limit" in err_str or "429" in err_str:
+            if any(k in err_str for k in ["rate_limit", "429", "too many requests", "500", "502", "503", "timeout", "connection", "read timed out"]):
                 wait = min(2 ** attempt * 10, 300)
-                print(f"  [rate limit] waiting {wait}s...")
+                print(f"  [API Transient Error] waiting {wait}s... ({type(e).__name__})")
                 time.sleep(wait)
                 attempt += 1
             else:

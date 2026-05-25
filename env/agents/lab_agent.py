@@ -85,7 +85,9 @@ def search(readview: dict, test_name: str, client: OpenAI, model: str) -> dict:
     )
 
     try:
-        matched_labels = set(json.loads(resp.choices[0].message.content).get("matches", []))
+        msg = resp.choices[0].message
+        raw = msg.content or getattr(msg, "reasoning_content", None) or "{}"
+        matched_labels = set(json.loads(raw).get("matches", []))
     except Exception:
         matched_labels = set()
 

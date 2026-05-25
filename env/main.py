@@ -60,7 +60,7 @@ def main() -> int:
         case = load_from_manifest(Path(args.manifest), args.index)
 
     if verbose:
-        print(f"Loaded case: subject={case['subject_id']} hadm={case['hadm_id']} stages={len(case['stages'])}")
+        print(f"Loaded case: subject={case['subject_id']} hadm={case['hadm_id']} stages={len(case['stages'])}", flush=True)
 
     episode_log = run_episode(
         case,
@@ -121,13 +121,13 @@ def main() -> int:
         dialogue_path.write_text(json.dumps(dialogue, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if verbose:
-        print(f"\n{'='*60}")
-        print(f"Episode complete.  run_at={run_at}")
-        print(f"Output:   {output_path}")
+        print(f"\n{'='*60}", flush=True)
+        print(f"Episode complete.  run_at={run_at}", flush=True)
+        print(f"Output:   {output_path}", flush=True)
         if mode == "interactive":
-            print(f"Dialogue: {output_dir / 'dialogue.json'}")
+            print(f"Dialogue: {output_dir / 'dialogue.json'}", flush=True)
         print(f"\nRun evaluation:  python -m evaluation.main "
-              f"--subject-id {subject_id} --hadm-id {hadm_id} --model {model_slug}")
+              f"--subject-id {subject_id} --hadm-id {hadm_id} --model {model_slug}", flush=True)
 
     return 0
 

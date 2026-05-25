@@ -53,9 +53,13 @@ Output JSON only:
             res = json.loads(raw)
             for code in res.get("marked_codes", []):
                 marked_codes.add(code)
+        except json.JSONDecodeError as e:
+            if verbose:
+                print(f"  [Scan] JSON Decode Error at window {start_idx}-{end_idx}: {e}")
         except Exception as e:
             if verbose:
-                print(f"  [Scan] Error at window {start_idx}-{end_idx}: {e}")
+                print(f"  [Scan] Fatal Error at window {start_idx}-{end_idx}: {e}")
+            raise e
         
         if end_idx == total_events - 1:
             break

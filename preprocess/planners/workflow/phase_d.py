@@ -13,7 +13,7 @@ import re
 
 from .helpers import call_llm, fmt_event_label, load_prompt
 
-VALID_TYPES = {"medication", "procedure", "diagnosis", "plan"}
+VALID_TYPES = {"medication", "procedure", "diagnosis"}
 VALID_ACTIONS = {"start", "stop", "switch", "adjust"}
 
 
@@ -65,45 +65,15 @@ def _llm_classify(client, desc: str, model_kwargs: dict) -> dict:
     raw = call_llm(client, [{"role": "user", "content": prompt}], **model_kwargs) \
               .choices[0].message.content.strip()
     result = _parse_json(raw)
-    t = result.get("type", "plan")
+    t = result.get("type", "")
     if t not in VALID_TYPES:
-        t = "plan"
+        t = "diagnosis"
     out: dict = {"type": t}
     if t == "medication":
         action = result.get("action", "")
         out["action"] = action if action in VALID_ACTIONS else _llm_action(client, desc, model_kwargs)
     return out
 
-
-def _is_covered(client, plan_desc: str, anchored_gts: list, model_kwargs: dict) -> bool:
-    """Check if a plan description is already covered by anchored GTs."""
-    if not anchored_gts:
-        return False
-    
-    anchored_text = "\n".join([f"- [{g['type']}] {g['description']}" for g in anchored_gts])
-    prompt = f"""You are a clinical logic auditor.
-A physician made a general management plan: "{plan_desc}"
-In the same stage, we have already identified the following specific anchored actions:
-{anchored_text}
-
-Is the general plan "{plan_desc}" completely redundant or already covered by the specific actions listed above?
-Example: "Started antibiotic therapy" is covered by "Started Vancomycin".
-Example: "Managed pain" is covered by "Started Dilaudid PCA".
-Example: "Low sodium diet" is NOT covered by "Started Lisinopril".
-
-Output JSON only:
-{{"covered": true|false}}
-"""
-    try:
-        raw = call_llm(client, [{"role": "user", "content": prompt}], **model_kwargs) \
-                  .choices[0].message.content.strip()
-        # Simple JSON extraction
-        import json
-        import re
-        m = re.search(r"\{.*\}", raw.replace("\n", ""))
-        return json.loads(m.group()).get("covered", False)
-    except:
-        return False
 
 
 # ------------------------------------------------------------------ #
@@ -124,6 +94,63 @@ def phase_d(client, stages: list, timeline: list,
     model_kwargs = {"model": model} if model else {}
 
     for s in stages:
+        # Handle bundle stages (multiple GTs from same-timestamp decisions)
+        if "_multi_gt" in s:
+            raw_gts = s.pop("_multi_gt")
+            all_gts = []
+            for gt in raw_gts:
+                desc = gt.get("description", "")
+                if gt.get("event_index") is not None:
+                    anchor_indices = [gt["event_index"]]
+                elif gt.get("event_range"):
+                    anchor_indices = list(range(gt["event_range"][0], gt["event_range"][1] + 1))
+                else:
+                    anchor_indices = []
+                if not anchor_indices:
+                    item = _llm_classify(client, desc, model_kwargs)
+                    item["description"] = desc
+                    all_gts.append(item)
+                else:
+                    events_text = "\n".join(
+                        f"  [{idx}] {fmt_event_label(evt_by_idx[idx])}"
+                        for idx in anchor_indices if idx in evt_by_idx
+                    )
+                    prompt = load_prompt("phase_d_classify.txt").format(decision=desc, events=events_text)
+                    raw = call_llm(client, [{"role": "user", "content": prompt}], **model_kwargs) \
+                              .choices[0].message.content.strip()
+                    sub_gts = _parse_json(raw).get("gts", [])
+                    for g in sub_gts:
+                        if not isinstance(g, dict):
+                            continue
+                        t = g.get("type", "")
+                        if t not in VALID_TYPES:
+                            t = "medication"
+                        item: dict = {"type": t, "description": desc}
+                        if g.get("event_index") is not None:
+                            item["event_index"] = g["event_index"]
+                        if t == "medication":
+                            action = g.get("action", "")
+                            item["action"] = action if action in VALID_ACTIONS else _llm_action(client, desc, model_kwargs)
+                        all_gts.append(item)
+                    if not sub_gts:
+                        item = _llm_classify(client, desc, model_kwargs)
+                        item["description"] = desc
+                        all_gts.append(item)
+            # Dedup pass 2: same event_index should appear at most once
+            seen_indices = set()
+            deduped = []
+            for g in all_gts:
+                idx = g.get("event_index")
+                if idx is not None:
+                    if idx in seen_indices:
+                        continue
+                    seen_indices.add(idx)
+                deduped.append(g)
+            s["gts"] = deduped
+            if verbose:
+                print(f'  [bundle] {len(deduped)} GTs merged')
+            continue
+
         gt = s.pop("gt")
         
         # Special case: diagnosis_list from scanner
@@ -178,14 +205,12 @@ def phase_d(client, stages: list, timeline: list,
         for g in raw_gts:
             if not isinstance(g, dict):
                 continue
-            t = g.get("type", "plan")
+            t = g.get("type", "")
             if t not in VALID_TYPES:
-                t = "plan"
+                t = "diagnosis"
             item: dict = {"type": t, "description": desc}
             if g.get("event_index") is not None:
                 item["event_index"] = g["event_index"]
-            if g.get("primary") is not None:
-                item["primary"] = g["primary"]
             if t == "medication":
                 action = g.get("action", "")
                 item["action"] = action if action in VALID_ACTIONS else _llm_action(client, desc, model_kwargs)
@@ -203,16 +228,17 @@ def phase_d(client, stages: list, timeline: list,
                if g.get("event_index") is not None
                or (g.get("type"), g.get("action")) not in has_anchored]
 
-        # Dedup pass 2: intelligent coverage check for un-anchored plan GTs
-        anchored_gts = [g for g in gts if g.get("event_index") is not None]
-        unanchored_plans = [g for g in gts if g.get("event_index") is None and g.get("type") == "plan"]
-        
-        if unanchored_plans and anchored_gts:
-            final_gts = [g for g in gts if g not in unanchored_plans]
-            for up in unanchored_plans:
-                if not _is_covered(client, up["description"], anchored_gts, model_kwargs):
-                    final_gts.append(up)
-            gts = final_gts
+        # Dedup pass 2: same event_index should appear at most once
+        seen_indices = set()
+        deduped = []
+        for g in gts:
+            idx = g.get("event_index")
+            if idx is not None:
+                if idx in seen_indices:
+                    continue
+                seen_indices.add(idx)
+            deduped.append(g)
+        gts = deduped
 
         s["gts"] = gts
 
@@ -285,6 +311,23 @@ def enrich_gt(stages: list, timeline: list, verbose: bool = True) -> list:
                     g["route"] = ev.get("route", "")
                     g["frequency"] = ev.get("frequency", "")
                     g["status"] = ev.get("status", "")
+                    # IV Large Volume records have no medication field; find a
+                    # same-timestamp prescription that looks like an IV fluid.
+                    if not g["drug_name"]:
+                        anchor_time = ev.get("event_time")
+                        _IV_KW = {"ringers", "dextrose", "lactated", "d5w", "d10w",
+                                  "normal saline", "0.9% nacl", "0.45% nacl"}
+                        for alt in timeline:
+                            if alt.get("source_table") != "hosp_prescriptions_df" \
+                                    or alt.get("event_time") != anchor_time:
+                                continue
+                            drug = (alt.get("drug") or "").strip()
+                            if "flush" in drug.lower():
+                                continue
+                            if (alt.get("route") or "").upper() in ("IV", "IVPB", "IV DRIP") \
+                                    and any(kw in drug.lower() for kw in _IV_KW):
+                                g["drug_name"] = drug
+                                break
                 elif src == "hosp_emar_detail_df":
                     g["drug_name"] = ev.get("medication", "")
                     g["route"] = ev.get("route", "")
@@ -310,7 +353,11 @@ def enrich_gt(stages: list, timeline: list, verbose: bool = True) -> list:
                             g["route"] = alt_ev.get("route", "")
                             break
 
-                if verbose and g.get("drug_name"):
+                drug = g.get("drug_name", "")
+                if not drug or len(drug) <= 2 or drug.isdigit():
+                    g.pop("drug_name", None)
+                    g["unscoreable"] = True
+                elif verbose:
                     print(f"  [{g.get('action','?')}] {g['drug_name']} "
                           f"{g.get('dose','')} {g.get('dose_unit','')} "
                           f"route={g.get('route','')}")
@@ -349,7 +396,9 @@ def enrich_gt(stages: list, timeline: list, verbose: bool = True) -> list:
                             g["icd_version"] = alt_ev.get("icd_version", 9)
                             break
 
-                if verbose and g.get("icd_code"):
+                if not g.get("icd_code"):
+                    g["unscoreable"] = True
+                elif verbose:
                     print(f"  [{gt_type}] ICD{g.get('icd_version','')}: "
                           f"{g['icd_code']} - {title[:60]}")
 

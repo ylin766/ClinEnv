@@ -5,8 +5,7 @@ Public API:
   score_lab_cost(stage_dialogue) → dict
   score_medication_cost(stage_dialogue, stage_case) → dict
   score_process(stage_dialogue, stage_case, conf) → dict
-    Runs all enabled process scorers and returns a single merged dict
-    (including derived lab_efficiency metric).
+    Runs all enabled process scorers and returns a single merged dict.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ def score_process(
         stage_case:     one stage entry from case.json
         proc_conf:      process_scorers section of eval config
 
-    Returns merged dict with keys for each enabled scorer plus lab_efficiency.
+    Returns merged dict with keys for each enabled scorer.
     """
     result: dict = {}
 
@@ -40,14 +39,6 @@ def score_process(
 
     if proc_conf.get("medication_cost", {}).get("enabled"):
         result["medication_cost"] = score_medication_cost(stage_dialogue, stage_case)
-
-    # Derived: lab_efficiency = lab_coverage × (1 − wasted_ratio)
-    #   wasted_ratio=None (no queries) → no penalty applied, but coverage=0 → 0
-    if "info_coverage" in result and "lab_cost" in result:
-        lab_cov   = result["info_coverage"].get("per_speaker", {}).get("lab", {}).get("coverage", 0.0)
-        wasted    = result["lab_cost"].get("wasted_ratio")   # None if no queries
-        waste_pen = wasted if wasted is not None else 0.0
-        result["lab_efficiency"] = round(lab_cov * (1.0 - waste_pen), 3)
 
     return result
 

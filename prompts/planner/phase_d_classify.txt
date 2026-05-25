@@ -10,22 +10,21 @@ Examine all events and produce one GT item per distinct clinical action in this 
 Rules:
 - Multiple records for the same drug → one GT (pick the most representative event index or a range)
 - Different drugs in the same decision → separate GTs
-- Multiple ICD codes for the same operation → one primary=true, others primary=false
+- Multiple ICD codes for the same operation → one GT item per distinct clinical action (pick the most representative event index)
 - Classify each action by its clinical nature (what was actually done), not by which administrative system recorded it
 
 Action (required and non-null only when type is medication):
-- start: beginning a medication the patient was not previously receiving.
+- start: beginning a medication the patient was not previously receiving in this admission.
 - stop: discontinuing or holding a medication completely.
-- adjust: changing the dosage, frequency, or route of the SAME medication (e.g., increasing dose, tapering down).
+- adjust: changing the dosage, frequency, or route of the SAME medication already in use (e.g., increasing dose, tapering down).
 - switch: replacing one medication with a DIFFERENT medication (e.g., switching from Vancomycin to Unasyn).
-- Base the action on the full decision description and the anchor events.
+- Base the action on the anchor events, not the wording of the description.
 
 For each GT item output:
 - type: medication | procedure | diagnosis
 - action: start | stop | adjust | switch | null (required and non-null only when type is medication)
 - event_index: the index of the most representative anchor event, or null if no specific event applies
 - event_range: [start, end] if the action spans multiple related events (e.g., an adjustment involving a stop and a start record), otherwise null
-- primary: true for the main item, false for secondary codes
 
 Output JSON only:
-{{"gts": [{{"type": "medication|procedure", "action": "start|stop|adjust|switch|null", "event_index": <int>|null, "event_range": [int, int]|null, "primary": true|false}}, ...]}}
+{{"gts": [{{"type": "medication|procedure|diagnosis", "action": "start|stop|adjust|switch|null", "event_index": <int>|null, "event_range": [int, int]|null}}, ...]}}

@@ -45,5 +45,37 @@ class _UsageTracker:
             }
 
 
-# Module-level singleton — imported everywhere as `from evaluation.scorers._usage import usage`
-usage = _UsageTracker()
+class _ProgressTracker:
+    """Global counter for LLM calls across all parallel workers.
+
+    Usage:
+        progress.reset(total=108)          # once, before work starts
+        msg = progress.tick("10076617 stage_b lab")   # thread-safe; returns formatted line
+    """
+
+    def __init__(self) -> None:
+        self._lock  = Lock()
+        self._done  = 0
+        self._total = 0
+
+    def reset(self, total: int = 0) -> None:
+        with self._lock:
+            self._done  = 0
+            self._total = total
+
+    def tick(self, label: str = "") -> str:
+        with self._lock:
+            self._done += 1
+            done, total = self._done, self._total
+        pct = done / total * 100 if total else 0.0
+        bar_width = 20
+        filled = int(bar_width * done / total) if total else 0
+        bar = "█" * filled + "░" * (bar_width - filled)
+        return f"[{bar}] {done}/{total} ({pct:.1f}%)  {label}"
+
+
+# Module-level singletons — imported everywhere as:
+#   from evaluation.scorers._usage import usage
+#   from evaluation.scorers._usage import progress
+usage    = _UsageTracker()
+progress = _ProgressTracker()

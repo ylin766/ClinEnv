@@ -9,8 +9,9 @@ Agent table assignments:
   nurse    — bedside monitoring, medication administration, procedures, radiology
   lab      — lab results and microbiology
 
-Tables that are physician-decision records (pharmacy orders, ICD procedures,
-prescriptions) are NOT included in any readview — they are used for GT only.
+Pharmacy orders and prescriptions are included in the nurse readview for
+within-window records (past facts the nurse knows about); GT protection is
+enforced via stage boundary — only events with index ≤ stage_end are visible.
 """
 
 from preprocess.loaders.ehr_loader import AdmissionRecord
@@ -39,15 +40,6 @@ _LAB_TABLES = {
     "hosp_labevents_df",           # laboratory results
     "hosp_microbiologyevents_df",  # microbiology and culture results
 }
-
-# Tables not routed to any agent readview (physician-decision records / GT only)
-# hosp_procedures_icd_df removed: GT protection comes from the stage boundary (GT index > stage end),
-# so procedures within the visible range are past facts the model should be able to access.
-_PHYSICIAN_ONLY_TABLES = {
-    "hosp_pharmacy_df",
-    "hosp_prescriptions_df",
-}
-
 
 # ------------------------------------------------------------------ #
 # Per-agent readview builders                                         #

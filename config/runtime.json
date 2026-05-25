@@ -1,7 +1,14 @@
 {
-  "mut_model": "gpt-5.4-mini",
+  "mut_model": "deepseek-chat",
   "env_model": "gpt-5.4-mini",
-  "mode": "interactive",
+  "api": {
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY"
+  },
+  "concurrency": {
+    "interact": 15,
+    "eval": 10
+  },
   "vllm": {
     "enabled": false,
     "base_url": "http://localhost:8000/v1"

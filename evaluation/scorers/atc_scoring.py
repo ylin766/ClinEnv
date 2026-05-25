@@ -226,14 +226,56 @@ def _ndcs(rxcui: str) -> list[str]:
         return []
 
 
-def _preprocess(drug_name: str) -> str:
-    """Strip parenthetical brand names and normalize whitespace.
+_SALT_IS_DRUG: frozenset[str] = frozenset({
+    "sodium chloride", "sodium bicarbonate", "sodium polystyrene sulfonate",
+    "calcium gluconate", "calcium chloride", "calcium carbonate",
+    "ferrous sulfate", "ferrous gluconate", "ferrous fumarate",
+    "magnesium sulfate", "magnesium citrate", "magnesium oxide",
+    "potassium chloride", "potassium phosphate", "potassium citrate",
+    "zinc sulfate", "zinc oxide",
+})
 
-    'HYDROmorphone (Dilaudid)' → 'HYDROmorphone'
-    'Piperacillin-Tazobactam (Zosyn)' → 'Piperacillin-Tazobactam'
+
+def _preprocess(drug_name: str) -> str:
+    """Strip parenthetical brand names, *NF* prefixes, concentration/form/salt suffixes.
+
+    'HYDROmorphone (Dilaudid)'           → 'HYDROmorphone'
+    '*NF* Ertapenem Sodium'              → 'Ertapenem'
+    '0.9% Sodium Chloride'               → 'Sodium Chloride'
+    'Bupivacaine 0.1%'                   → 'Bupivacaine'
+    'Albuterol 0.083% Neb Soln'          → 'Albuterol'
+    'HYDROmorphone P.F.'                 → 'HYDROmorphone'
+    'Morphine Sulfate IR'                → 'Morphine'
+    'Metoprolol Succinate XL'            → 'Metoprolol'
+    'Ciprofloxacin HCl'                  → 'Ciprofloxacin'
+    'Sodium Bicarbonate'                 → 'Sodium Bicarbonate'  (salt IS the drug)
     """
     import re as _re
-    return _re.sub(r"\s*\([^)]+\)", "", drug_name).strip()
+    s = drug_name.strip()
+    # Strip *NF* prefix (non-formulary marker)
+    s = _re.sub(r"^\*NF\*\s*", "", s, flags=_re.IGNORECASE)
+    # Strip parenthetical suffixes
+    s = _re.sub(r"\s*\([^)]+\)", "", s)
+    # Strip leading concentration: "0.9% Drug" → "Drug"
+    s = _re.sub(r"^\d+(\.\d+)?%\s+", "", s)
+    # Strip trailing concentration + optional form: "Drug 0.1% Ophth Soln" → "Drug"
+    s = _re.sub(r"\s+\d+(\.\d+)?%.*$", "", s)
+    # Strip trailing form keywords without concentration
+    s = _re.sub(
+        r"\s+(Viscous|Patch|Ophth\b|Ophthalmic\b|Oral\s+Rinse|Neb\s+Soln)\b.*$",
+        "", s, flags=_re.IGNORECASE,
+    )
+    # Strip trailing salt/form suffixes (unless the salt IS the active ingredient).
+    # Check AFTER concentration stripping so "0.9% Sodium Chloride" → "Sodium Chloride" is preserved.
+    if s.strip().lower() not in _SALT_IS_DRUG:
+        s = _re.sub(
+            r"\s+(P\.F\.|Sodium|Potassium|Hydrochloride|HCl|Hcl|"
+            r"Sulfate|Sulphate|Tartrate|Succinate|Maleate|Phosphate|Acetate|"
+            r"Citrate|Gluconate|Mesylate|Besylate|Fumarate|Bromide|Chloride|"
+            r"Succ\b|XL\b|IR\b|ER\b|SR\b|CR\b)(\s+.*)?$",
+            "", s, flags=_re.IGNORECASE,
+        )
+    return s.strip()
 
 
 def _resolve_alias(drug_name: str) -> str:
@@ -262,28 +304,40 @@ def drug_to_atc(drug_name: str) -> str | None:
 
 @lru_cache(maxsize=256)
 def _normalize_drug_name(drug_name: str) -> str:
-    """Use LLM to strip dose/form/salt suffixes; return generic name."""
+    """Use LLM to strip dose/form/salt suffixes; return generic name.
+
+    Retries indefinitely on API/connection errors.
+    Returns original name only on empty/unexpected LLM output.
+    """
+    import time as _time
+    from openai import APIConnectionError, APITimeoutError, RateLimitError
     from evaluation.scorers._openai_utils import get_client, get_model
     from evaluation.scorers._usage import usage
-    try:
-        system_prompt = _PROMPT_FILE.read_text(encoding="utf-8").strip()
-        resp = get_client().chat.completions.create(
-            model=get_model(),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": drug_name},
-            ],
-            temperature=0,
-            max_completion_tokens=20,
-        )
-        if hasattr(resp, "usage") and resp.usage:
-            usage.track("atc_normalizer",
-                        prompt_tokens=resp.usage.prompt_tokens,
-                        completion_tokens=resp.usage.completion_tokens)
-        normalized = resp.choices[0].message.content.strip()
-        return normalized if normalized else drug_name
-    except Exception:
-        return drug_name
+    system_prompt = _PROMPT_FILE.read_text(encoding="utf-8").strip()
+    attempt = 0
+    while True:
+        try:
+            resp = get_client().chat.completions.create(
+                model=get_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": drug_name},
+                ],
+                temperature=0,
+                max_completion_tokens=200,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                usage.track("atc_normalizer",
+                            prompt_tokens=resp.usage.prompt_tokens,
+                            completion_tokens=resp.usage.completion_tokens)
+            normalized = resp.choices[0].message.content.strip()
+            return normalized if normalized else drug_name
+        except (APIConnectionError, APITimeoutError, RateLimitError):
+            attempt += 1
+            _time.sleep(min(2 ** min(attempt, 6), 60))
+        except Exception:
+            # Unexpected LLM output — fall back to original name
+            return drug_name
 
 
 def drug_to_atc_with_fallback(drug_name: str) -> str | None:

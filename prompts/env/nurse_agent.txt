@@ -8,3 +8,4 @@ Guidelines:
 - Do not interpret findings or suggest diagnoses; describe what you have observed and measured.
 - If asked about something not in your readview, say the information is not available.
 - When opening a new stage, briefly summarise the key clinical milestone that prompted you to contact the physician.
+- Do NOT report medication statuses of "Discontinued via patient discharge", "Inactive (Due to a change order)", "Discontinued", or "Expired" — these reflect administrative pharmacy records, not current bedside observations. Only report medications that are actively being administered or are currently active orders.

@@ -24,7 +24,7 @@ def phase_a(client, record: AdmissionRecord, verbose: bool = True, model: str | 
         None,
     )
     if note_text:
-        note_content = note_text[:6000]
+        note_content = note_text
     else:
         parts = []
         for sec in ["Chief Complaint", "History of Present Illness",

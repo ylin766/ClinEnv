@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from env.llm_client import chat_complete
-from evaluation.scorers._openai_utils import get_client, get_model
+from evaluation.scorers._openai_utils import get_client, get_embedding_client, get_embed_model, get_model
 from evaluation.scorers.process_scorers._dialogue import parse_tool_messages
 
 _ROOT             = Path(__file__).parent.parent.parent.parent
@@ -28,7 +28,6 @@ _DDD_PATH         = _ROOT / "data" / "who_atc_ddd.csv"
 _DECOMPOSER_PROMPT = _ROOT / "prompts" / "scoring" / "drug_decomposer.txt"
 _RERANKER_PROMPT  = _ROOT / "prompts" / "scoring" / "ddd_reranker.txt"
 _EMB_CACHE        = Path(__file__).parent.parent.parent / "cache" / "ddd_index.pkl"
-_EMBED_MODEL      = "text-embedding-3-small"
 _TOPK             = 10
 
 _nadac_cache:     dict[str, float] | None = None
@@ -126,7 +125,7 @@ def _build_ddd_index(entries: list[dict]) -> tuple:
     texts = [e["text"] for e in entries]
     embs  = []
     for i in range(0, len(texts), 256):
-        resp = get_client().embeddings.create(model=_EMBED_MODEL, input=texts[i : i + 256])
+        resp = get_embedding_client().embeddings.create(model=get_embed_model(), input=texts[i : i + 256])
         embs.append(np.array([r.embedding for r in resp.data], dtype=np.float32))
     embeddings = np.vstack(embs)
     embeddings /= np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-8)
@@ -240,7 +239,7 @@ def _lookup_ddd(drug_name: str, atc_code: str | None) -> tuple[float, str | None
 
     for component in components:
         try:
-            q_resp = get_client().embeddings.create(model=_EMBED_MODEL, input=[component])
+            q_resp = get_embedding_client().embeddings.create(model=get_embed_model(), input=[component])
             q      = np.array(q_resp.data[0].embedding, dtype=np.float32)
             q     /= max(float(np.linalg.norm(q)), 1e-8)
 
@@ -324,8 +323,12 @@ def score_medication_cost(stage_dialogue: dict, stage_case: dict) -> dict:
 
     for parsed in parse_tool_messages(messages):
         if parsed.get("status") == "recorded" and parsed.get("type") == "medication":
+            action = (parsed.get("action") or "").strip().lower()
+            # Only count start and switch actions (stop/adjust don't incur new drug costs)
+            if action not in ("start", "switch"):
+                continue
             n_medications += 1
-            drug_name      = parsed.get("value") or parsed.get("drug_name") or ""
+            drug_name = parsed.get("value") or parsed.get("drug_name") or ""
             if drug_name:
                 total_cost += _drug_to_daily_cost(drug_name)
 

@@ -4,10 +4,8 @@ Planner entry point with enhanced per-case logging.
 Pipeline: Phase A -> Phase B -> Phase B2 -> Phase C -> merge -> Phase D
 """
 
-import argparse
 import json
 import os
-import random
 import sys
 import time
 from pathlib import Path
@@ -22,7 +20,7 @@ from env.llm_client import get_openai_client, get_anthropic_client
 
 from preprocess.loaders.ehr_loader import load_admission
 from env.config_loader import get_config
-from .workflow import phase_a, phase_b, phase_b2, phase_c, phase_d, merge_small_stages, scan_diagnoses
+from .workflow import phase_a, phase_b, phase_b2, phase_c, phase_d, scan_diagnoses
 from .workflow.helpers import DEFAULT_MODEL
 
 DATA_ROOT = str(Path(__file__).parent.parent.parent / "mimic-ext-time-series" / "Merge" / "ehr_by_subject")
@@ -77,13 +75,14 @@ def run(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None =
         located = phase_b(client, record, decisions, verbose=False, model=model)
         located = phase_b2(client, record, located, verbose=False, model=model)
         for i, l in enumerate(located):
-            idx = l.get('event_index') or l.get('event_range', 'N/A')
+            idx = l.get('index')
+            if idx is None:
+                idx = l.get('index_range', 'N/A')
             lprint(f"  {i}: [{l.get('type_hint', l.get('type', '?'))}] -> anchor={idx}")
 
         # Step 3: Phase C (Stage Building)
         lprint("\n[PHASE C] Building Stages...")
         stages = phase_c(client, record, located, verbose=False, model=model, scanned_diagnoses=None)
-        stages = merge_small_stages(stages, min_events=10, verbose=False)
         stages = phase_c(client, record, [], verbose=False, model=model, scanned_diagnoses=scanned_diags, existing_stages=stages)
         lprint(f"Built {len(stages)} stages")
 
@@ -116,64 +115,3 @@ def run(subject_id: str, hadm_id: str, verbose: bool = True, model: str | None =
         if log_handle:
             log_handle.close()
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sample", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--out_json", default="results_100_sonnet.json")
-    args = parser.parse_args()
-
-    # Create logs directory
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("logs") / f"run_{run_id}"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Logging to {log_dir}")
-
-    # Load Manifest
-    with open(MANIFEST) as f:
-        entries = [json.loads(l) for l in f if l.strip()]
-    
-    random.seed(args.seed)
-    cases = random.sample(entries, min(args.sample, len(entries)))
-    
-    import concurrent.futures
-    all_results = {}
-    
-    def _worker(e):
-        sid, hid = str(e["subject_id"]), str(e["hadm_id"])
-        stages = run(sid, hid, verbose=False, model=args.model, log_dir=log_dir)
-        if not stages:
-            raise RuntimeError(f"Case {sid}/{hid} returned 0 stages")
-        return f"{sid}/{hid}", stages
-
-    max_workers = 10
-    print(f"Running {len(cases)} cases with {max_workers} workers...")
-    
-    consecutive_failures = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_worker, e): e for e in cases}
-        done_count = 0
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                case_id, stages = future.result()
-                all_results[case_id] = stages
-                consecutive_failures = 0
-            except Exception as exc:
-                consecutive_failures += 1
-                print(f"FAILED: {exc}")
-                if consecutive_failures >= 3:
-                    print("3 consecutive failures — aborting to save tokens!")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return 1
-            done_count += 1
-            if done_count % 5 == 0:
-                print(f"Completed {done_count}/{len(cases)} cases...")
-
-    with open(args.out_json, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
-    
-    print(f"\nDone! Results saved to {args.out_json}. Logs are in {log_dir}")
-
-if __name__ == "__main__":
-    main()

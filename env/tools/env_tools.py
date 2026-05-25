@@ -64,10 +64,10 @@ _SUBMIT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "diagnosis": {"type": "string", "description": "Standard diagnosis name."},
+                    "diagnosis_name": {"type": "string", "description": "Standard diagnosis name."},
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
-                "required": ["diagnosis", "reasoning"],
+                "required": ["diagnosis_name", "reasoning"],
             },
         },
     },
@@ -83,30 +83,10 @@ _SUBMIT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "procedure": {"type": "string", "description": "Standard procedure name."},
+                    "procedure_name": {"type": "string", "description": "Standard procedure name."},
                     "reasoning": {"type": "string", "description": "Brief clinical reasoning."},
                 },
-                "required": ["procedure", "reasoning"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "submit_plan",
-            "description": (
-                "Submit ONE clinical management decision as a concise statement. "
-                "Each distinct decision requires a separate call — do not combine multiple decisions into one submission. "
-                "Examples of one decision: 'hold anticoagulation given active bleeding', "
-                "'transfuse 1 unit PRBC for symptomatic anemia', 'consult urology for hematuria management'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "plan": {"type": "string", "description": "One clinical management decision as a concise statement."},
-                    "reasoning": {"type": "string", "description": "Brief clinical reasoning for this specific decision."},
-                },
-                "required": ["plan", "reasoning"],
+                "required": ["procedure_name", "reasoning"],
             },
         },
     },
@@ -136,9 +116,9 @@ _INTERACTION_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "question": {"type": "string", "description": "Your question to the patient."},
+                    "query": {"type": "string", "description": "Your question to the patient."},
                 },
-                "required": ["question"],
+                "required": ["query"],
             },
         },
     },
@@ -211,7 +191,7 @@ _HISTORY_TOOLS = [
 # Public tool-set builders                                             #
 # ------------------------------------------------------------------ #
 
-SUBMIT_TOOLS  = {"submit_medication", "submit_diagnosis", "submit_procedure", "submit_plan"}
+SUBMIT_TOOLS  = {"submit_medication", "submit_diagnosis", "submit_procedure"}
 FINALIZE_TOOL = "finalize_decision"
 
 # Map agent name → tool schemas it contributes
@@ -233,7 +213,7 @@ _FINALIZE_SCHEMA = next(t for t in _SUBMIT_TOOLS if t["function"]["name"] == "fi
 def get_submit_tools(required_types: set[str]) -> list[dict]:
     """Return only the submit tools that match the stage's GT types, plus finalize.
 
-    required_types: set of strings from {"medication", "diagnosis", "procedure", "plan"}.
+    required_types: set of strings from {"medication", "diagnosis", "procedure"}.
     If empty, all submit tools are included as a fallback.
     """
     if not required_types:
@@ -294,24 +274,17 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
         return result
 
     if name == "submit_diagnosis":
-        value = args.get("diagnosis", "").strip()
+        value = (args.get("diagnosis_name") or args.get("diagnosis") or "").strip()
         if not value:
-            return {"error": "diagnosis is required"}
+            return {"error": "diagnosis_name is required"}
         return {"status": "recorded", "type": "diagnosis",
                 "value": value, "reasoning": args.get("reasoning", "")}
 
     if name == "submit_procedure":
-        value = args.get("procedure", "").strip()
+        value = (args.get("procedure_name") or args.get("procedure") or "").strip()
         if not value:
-            return {"error": "procedure is required"}
+            return {"error": "procedure_name is required"}
         return {"status": "recorded", "type": "procedure",
-                "value": value, "reasoning": args.get("reasoning", "")}
-
-    if name == "submit_plan":
-        value = args.get("plan", "").strip()
-        if not value:
-            return {"error": "plan is required"}
-        return {"status": "recorded", "type": "plan",
                 "value": value, "reasoning": args.get("reasoning", "")}
 
     if name == "finalize_decision":
@@ -323,9 +296,9 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
     rv     = stage.get("readviews", {})
 
     if name == "ask_patient":
-        question = args.get("question", "").strip()
+        question = (args.get("query") or args.get("question") or "").strip()
         if not question:
-            return {"error": "question is required"}
+            return {"error": "query is required"}
         return {"_speaker": "patient",
                 "response": patient_agent.answer(rv.get("patient", {}), question, client, model)}
 
@@ -337,7 +310,7 @@ def dispatch(name: str, args: dict, stage: dict, ctx: dict | None = None) -> Any
                 "response": nurse_agent.answer(rv.get("nurse", {}), query, client, model)}
 
     if name == "order_lab":
-        test_name = args.get("test_name", "").strip()
+        test_name = (args.get("test_name") or args.get("lab_name") or "").strip()
         if not test_name:
             return {"error": "test_name is required"}
         result = lab_agent.search(rv.get("lab", {}), test_name, client, model)

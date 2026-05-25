@@ -40,7 +40,9 @@ def answer(readview: dict, question: str, client: OpenAI, model: str) -> str:
             {"role": "system", "content": f"{system}\n\n---\n{context}"},
             {"role": "user",   "content": question},
         ],
-        temperature=0.3,
+        temperature=0,
         max_completion_tokens=300,
     )
-    return resp.choices[0].message.content.strip()
+    msg = resp.choices[0].message
+    text = msg.content or getattr(msg, "reasoning_content", None) or ""
+    return text.strip()
