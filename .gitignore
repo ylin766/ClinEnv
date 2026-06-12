@@ -35,3 +35,6 @@ config/*.json
 
 # Utility/one-off scripts kept local
 scripts/
+
+# Frontend demo (local only, not for open source)
+demo/

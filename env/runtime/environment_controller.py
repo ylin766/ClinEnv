@@ -1012,9 +1012,16 @@ def run_episode(
 
     stages           = case["stages"]
     prior_admissions = case.get("prior_admissions", [])
+    patient_readview = case.get("patient_readview")
     stage_logs: list[dict] = []
+    cumulative_events: list = []
 
     for i, stage in enumerate(stages, 1):
+        cumulative_events = cumulative_events + stage.get("events", [])
+        if "visible_events" not in stage:
+            stage = {**stage, "visible_events": cumulative_events}
+        if patient_readview and "patient" not in stage.get("readviews", {}):
+            stage = {**stage, "readviews": {**stage.get("readviews", {}), "patient": patient_readview}}
         if verbose:
             print(f"\n{'='*60}\nSTAGE {i}/{len(stages)}: {stage.get('label', '')}\n{'='*60}", flush=True)
         log = run_stage(
