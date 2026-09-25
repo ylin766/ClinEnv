@@ -2,7 +2,7 @@
 
 Per-speaker: LLM extracts key items from readview, marks which were received.
   coverage  = covered / total key items
-  efficiency = coverage / n_info_calls
+  efficiency = coverage * N / (N + n_info_calls)
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def score_info_coverage(stage_dialogue: dict, stage_case: dict) -> dict:
         per_speaker:      {speaker: {total, covered, coverage, items}}
         coverage_overall: float
         n_info_calls:     int
-        efficiency:       coverage_overall / n_info_calls  (0 if no calls)
+        efficiency:       coverage_overall * N / (N + n_info_calls)
     """
     eval_conf = get_config("eval")
     speakers  = eval_conf.get("process_scorers", {}).get("info_coverage", {}).get(
@@ -110,12 +110,12 @@ def score_info_coverage(stage_dialogue: dict, stage_case: dict) -> dict:
     coverages        = [v["coverage"] for v in per_speaker.values() if "coverage" in v]
     coverage_overall = round(sum(coverages) / len(coverages), 3) if coverages else 0.0
 
-    # Total items across all speakers (reflects stage info complexity)
+    # Total items across all speakers (reflects stage info complexity, N in paper Eq. 12)
     total_items = sum(v.get("total", 0) for v in per_speaker.values())
-    # efficiency = coverage / max(1, K/N)
-    # Scale-invariant: penalises over-querying (K>N) proportionally; no penalty when K≤N.
+    # efficiency = coverage * N / (N + K)
+    # Discounts coverage as query count grows relative to judged fact count (Paper Eq. 12 & Appendix C.7).
     if total_items > 0 and n_info_calls > 0:
-        efficiency = round(coverage_overall / max(1.0, n_info_calls / total_items), 3)
+        efficiency = round(coverage_overall * (total_items / (total_items + n_info_calls)), 3)
     else:
         efficiency = coverage_overall
 
